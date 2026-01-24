@@ -10,8 +10,8 @@ type Child struct {
 	ID        uint           `gorm:"primaryKey"`
 	UserID    uint           `gorm:"not null"`
 	Name      string         `gorm:"not null" json:"name"`
-	Age       uint           `json:"age"`
+	Age       *int           `json:"age"`
 	Gender    string         `json:"gender"`
-	Interest  pq.StringArray `gorm:"type:text[]" json:"interest"`
+	Interests pq.StringArray `gorm:"type:text[]" json:"interests"`
 	CreatedAt time.Time      `json:"created_at"`
 }

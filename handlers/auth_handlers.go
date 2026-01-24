@@ -37,11 +37,11 @@ func RegisterUser(db *gorm.DB) gin.HandlerFunc {
 			}
 
 			child := models.Child{
-				UserID:   user.ID,
-				Name:     req.ChildName,
-				Age:      uint(req.Age),
-				Gender:   req.Gender,
-				Interest: pq.StringArray(req.Interests),
+				UserID:    user.ID,
+				Name:      req.ChildName,
+				Age:       &req.Age,
+				Gender:    req.Gender,
+				Interests: pq.StringArray(req.Interests),
 			}
 
 			if err := tx.Where(models.Child{UserID: user.ID}).Assign(child).FirstOrCreate(&child).Error; err != nil {

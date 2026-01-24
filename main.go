@@ -23,6 +23,9 @@ func main() {
 	dsn := os.Getenv("DB_URL")
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatal("Gagal koneksi database:", err)
+	}
 
 	fmt.Println("Running Database Migration...")
 	db.AutoMigrate(&models.User{}, &models.Child{})
@@ -31,10 +34,10 @@ func main() {
 
 	api := r.Group("/api")
 	{
-		// Endpoint untuk registrasi user dan data anak sekaligus
 		api.POST("/register", handlers.RegisterUser(db))
+		api.GET("/child/:uid", handlers.GetChildInfo(db))
 	}
 
 	fmt.Println("Server is running on port 8080...")
-	r.Run(":8080")
+	r.Run("0.0.0.0:8080")
 }
