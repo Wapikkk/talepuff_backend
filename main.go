@@ -31,11 +31,13 @@ func main() {
 	db.AutoMigrate(&models.User{}, &models.Child{})
 
 	r := gin.Default()
+	r.Static("/uploads", "/uploads")
 
 	api := r.Group("/api")
 	{
 		api.POST("/register", handlers.RegisterUser(db))
 		api.GET("/child/:uid", handlers.GetChildInfo(db))
+		api.POST("/child/upload-photo/:id", handlers.UploadChildPhotoHandler(db))
 	}
 
 	fmt.Println("Server is running on port 8080...")
