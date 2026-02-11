@@ -31,7 +31,7 @@ func main() {
 	db.AutoMigrate(&models.User{}, &models.Child{})
 
 	r := gin.Default()
-	r.Static("/uploads", "/uploads")
+	r.Static("/uploads", "./uploads")
 
 	api := r.Group("/api")
 	{
@@ -41,5 +41,6 @@ func main() {
 	}
 
 	fmt.Println("Server is running on port 8080...")
+	os.Mkdir("./uploads/profiles", os.ModePerm)
 	r.Run("0.0.0.0:8080")
 }
