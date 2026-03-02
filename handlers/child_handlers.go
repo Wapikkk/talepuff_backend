@@ -30,3 +30,30 @@ func GetChildInfo(db *gorm.DB) gin.HandlerFunc {
 		c.JSON(http.StatusOK, child)
 	}
 }
+
+func UpdateChildName(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.Param("id")
+
+		var input struct {
+			Name string `json:"name"`
+		}
+
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(400, gin.H{"error": "Invalid Input Data"})
+			return
+		}
+
+		result := db.Table("children").Where("id = ?", id).Update("name", input.Name)
+
+		if result.Error != nil {
+			c.JSON(500, gin.H{"error": "Failed to update database"})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"message":  "Name updated successfully",
+			"new_name": input.Name,
+		})
+	}
+}
