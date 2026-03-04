@@ -59,3 +59,26 @@ func RegisterUser(db *gorm.DB) gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{"message": "User and Child data saved successfully!"})
 	}
 }
+
+func UpdateUserEmail(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		uid := c.Param("uid")
+
+		var input struct {
+			Email string `json:"email"`
+		}
+
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(400, gin.H{"error": "Invalid Input"})
+			return
+		}
+
+		result := db.Table("users").Where("firebase_uid = ?", uid).Update("email", input.Email)
+		if result.Error != nil {
+			c.JSON(500, gin.H{"error": "Failed to Update Database"})
+			return
+		}
+
+		c.JSON(200, gin.H{"message": "Email update successfully"})
+	}
+}

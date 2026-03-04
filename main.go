@@ -39,6 +39,7 @@ func main() {
 		api.GET("/child/:uid", handlers.GetChildInfo(db))
 		api.POST("/child/upload-photo/:id", handlers.UploadChildPhotoHandler(db))
 		api.PUT("/child/update-name/:id", handlers.UpdateChildName(db))
+		api.PUT("/user/update-email/:uid", handlers.UpdateUserEmail(db))
 	}
 
 	fmt.Println("Server is running on port 8080...")
