@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"talepuff_backend/dto"
 	"talepuff_backend/models"
 
 	"github.com/gin-gonic/gin"
@@ -9,18 +10,9 @@ import (
 	"gorm.io/gorm"
 )
 
-type RegisterRequest struct {
-	FirebaseUID string   `json:"firebase_uid" binding:"required"`
-	Email       string   `json:"email" binding:"required"`
-	ChildName   string   `json:"child_name" binding:"required"`
-	Age         int      `json:"age"`
-	Gender      string   `json:"gender"`
-	Interests   []string `json:"interests"`
-}
-
 func RegisterUser(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var req RegisterRequest
+		var req dto.RegisterRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -64,10 +56,7 @@ func UpdateUserEmail(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.Param("uid")
 
-		var input struct {
-			Email string `json:"email"`
-		}
-
+		var input dto.UpdateEmailRequest
 		if err := c.ShouldBindJSON(&input); err != nil {
 			c.JSON(400, gin.H{"error": "Invalid Input"})
 			return

@@ -40,9 +40,10 @@ func main() {
 		api.POST("/child/upload-photo/:id", handlers.UploadChildPhotoHandler(db))
 		api.PUT("/child/update-name/:id", handlers.UpdateChildName(db))
 		api.PUT("/user/update-email/:uid", handlers.UpdateUserEmail(db))
+		api.POST("/story/generate", handlers.GenerateStory(db))
 	}
 
 	fmt.Println("Server is running on port 8080...")
-	os.Mkdir("./uploads/profiles", os.ModePerm)
+	os.MkdirAll("./uploads/profiles", os.ModePerm)
 	r.Run("0.0.0.0:8080")
 }
