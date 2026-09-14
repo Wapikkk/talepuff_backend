@@ -28,7 +28,11 @@ func main() {
 	}
 
 	fmt.Println("Running Database Migration...")
-	db.AutoMigrate(&models.User{}, &models.Child{})
+	db.AutoMigrate(
+		&models.User{},
+		&models.Child{},
+		&models.Story{},
+	)
 
 	r := gin.Default()
 	r.Static("/uploads", "./uploads")

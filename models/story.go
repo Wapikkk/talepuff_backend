@@ -11,4 +11,5 @@ type Story struct {
 	Theme         string `json:"theme"`
 	Language      string `json:"language"`
 	Content       string `json:"content"`
+	AudioURL      string `json:"audio_url"`
 }

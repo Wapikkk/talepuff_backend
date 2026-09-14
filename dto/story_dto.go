@@ -13,3 +13,13 @@ type GenerateStoryRequest struct {
 type PythonResponse struct {
 	Response string `json:"response"`
 }
+
+type AudiGeneratedRequest struct {
+	StoryID   uint   `json:"story_id" binding:"required"`
+	VoiceTone string `json:"voice_tone" binding:"required"`
+}
+
+type PythonAudioResponse struct {
+	Status   string `json:"status"`
+	AudioURL string `json:"audio_url"`
+}
