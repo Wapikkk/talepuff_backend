@@ -13,25 +13,6 @@ import (
 
 func GenerateStory(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userIDClaim, exists := c.Get("user_id")
-		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Invalid or missing token"})
-			return
-		}
-
-		var currentUserID uint
-		switch v := userIDClaim.(type) {
-		case float64:
-			currentUserID = uint(v)
-		case uint:
-			currentUserID = v
-		case int:
-			currentUserID = uint(v)
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse user ID from token"})
-			return
-		}
-
 		var req dto.GenerateStoryRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -39,8 +20,8 @@ func GenerateStory(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		var child models.Child
-		if err := db.First(&child, "id = ? AND user_id = ?", req.ChildID, currentUserID).Error; err != nil {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Child profile not found or access denied"})
+		if err := db.First(&child, "id = ?", req.ChildID).Error; err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Child profile not found"})
 			return
 		}
 
@@ -64,6 +45,7 @@ func GenerateStory(db *gorm.DB) gin.HandlerFunc {
 			CharacterName: req.CharacterName,
 			Theme:         req.Theme,
 			Language:      req.Language,
+			Title:         aiResult.Title,
 			Content:       aiResult.Response,
 		}
 
@@ -99,7 +81,7 @@ func GeneratedAudio(db *gorm.DB) gin.HandlerFunc {
 		}
 		pythonReqBody, _ := json.Marshal(pythonPayload)
 
-		resp, err := http.Post("http://localhost:8000/api/audio/generate_audio", "application/json", bytes.NewBuffer(pythonReqBody))
+		resp, err := http.Post("http://localhost:8000/generate_audio", "application/json", bytes.NewBuffer(pythonReqBody))
 		if err != nil || resp.StatusCode != 200 {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to contact TTS service"})
 			return

@@ -10,6 +10,7 @@ type Story struct {
 	CharacterName string `json:"character_name"`
 	Theme         string `json:"theme"`
 	Language      string `json:"language"`
+	Title         string `json:"title"`
 	Content       string `json:"content"`
 	AudioURL      string `json:"audio_url"`
 }

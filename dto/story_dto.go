@@ -7,10 +7,13 @@ type GenerateStoryRequest struct {
 	Mood          string `json:"mood"`
 	LengthMinutes int    `json:"length_minutes"`
 	Language      string `json:"language"`
+	Title         string `json:"title"`
 	Description   string `json:"description"`
 }
 
 type PythonResponse struct {
+	Status   string `json:"status"`
+	Title    string `json:"title"`
 	Response string `json:"response"`
 }
 
