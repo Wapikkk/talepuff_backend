@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -67,10 +68,10 @@ func newTestEnv(t *testing.T) *env {
 		t.Fatalf("menolak menjalankan tes di database %q: namanya harus berakhiran _test", name)
 	}
 
-	if err := db.AutoMigrate(&models.User{}, &models.Child{}, &models.Story{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Child{}, &models.Story{}, &models.Feedback{}); err != nil {
 		t.Fatalf("migrasi gagal: %v", err)
 	}
-	if err := db.Exec("TRUNCATE TABLE stories, children, users RESTART IDENTITY CASCADE").Error; err != nil {
+	if err := db.Exec("TRUNCATE TABLE feedbacks, stories, children, users RESTART IDENTITY CASCADE").Error; err != nil {
 		t.Fatalf("gagal mengosongkan tabel tes: %v", err)
 	}
 
@@ -119,9 +120,11 @@ func (e *env) register(t *testing.T, uid, email, childName string) *httptest.Res
 }
 
 type childJSON struct {
-	ID   uint   `json:"ID"`
-	Name string `json:"name"`
-	Age  int    `json:"age"`
+	ID              uint   `json:"ID"`
+	Name            string `json:"name"`
+	Age             int    `json:"age"`
+	ProfilePhotoURL string `json:"profile_photo_url"`
+	MascotID        string `json:"mascot_id"`
 }
 
 func (e *env) child(t *testing.T, asUID, ofUID string) (childJSON, int) {
@@ -148,9 +151,12 @@ func TestAuth_EveryApiRouteRequiresAValidToken(t *testing.T) {
 		{http.MethodGet, "/api/child/uid-1"},
 		{http.MethodPost, "/api/child/upload-photo/1"},
 		{http.MethodPut, "/api/child/update-name/1"},
+		{http.MethodDelete, "/api/child/1/photo"},
+		{http.MethodPut, "/api/child/1/mascot"},
 		{http.MethodPut, "/api/user/update-email/uid-1"},
 		{http.MethodPost, "/api/story/generate"},
 		{http.MethodPost, "/api/audio/generate_audio"},
+		{http.MethodPost, "/api/feedback"},
 	}
 	for _, route := range routes {
 		label := route.method + " " + route.path
@@ -302,6 +308,48 @@ func TestUpdateChildName_CannotRenameSomeoneElsesChild(t *testing.T) {
 	mustEqual(t, "nama korban tidak berubah", after.Name, "Aira")
 }
 
+// ---------- maskot ----------
+
+func TestMascot(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-2", "b@example.com", "Bimo")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	path := "/api/child/" + itoa(child.ID) + "/mascot"
+
+	t.Run("profil baru memakai Harimau", func(t *testing.T) {
+		mustEqual(t, "maskot bawaan", child.MascotID, "Harimau")
+	})
+
+	t.Run("semua maskot yang tersedia bisa dipilih", func(t *testing.T) {
+		for _, mascot := range []string{"OrangUtan", "Badak", "Burung", "Harimau"} {
+			mustEqual(t, "status "+mascot, e.call(t, "uid-1", http.MethodPut, path, map[string]string{"mascot_id": mascot}).Code, http.StatusOK)
+			saved, _ := e.child(t, "uid-1", "uid-1")
+			mustEqual(t, "tersimpan "+mascot, saved.MascotID, mascot)
+		}
+	})
+
+	t.Run("maskot yang tidak dikenal ditolak dan pilihan sebelumnya tidak berubah", func(t *testing.T) {
+		e.call(t, "uid-1", http.MethodPut, path, map[string]string{"mascot_id": "Badak"})
+		for _, bad := range []string{"", "Naga", "badak", "Harimau; DROP TABLE children"} {
+			mustEqual(t, "status untuk "+bad, e.call(t, "uid-1", http.MethodPut, path, map[string]string{"mascot_id": bad}).Code, http.StatusBadRequest)
+		}
+		saved, _ := e.child(t, "uid-1", "uid-1")
+		mustEqual(t, "tetap Badak", saved.MascotID, "Badak")
+	})
+
+	t.Run("pengguna lain tidak bisa mengubah maskot anak orang lain", func(t *testing.T) {
+		mustEqual(t, "status", e.call(t, "uid-2", http.MethodPut, path, map[string]string{"mascot_id": "Burung"}).Code, http.StatusNotFound)
+		saved, _ := e.child(t, "uid-1", "uid-1")
+		mustEqual(t, "maskot korban tidak berubah", saved.MascotID, "Badak")
+	})
+
+	t.Run("id bukan angka 400 dan id yang tidak ada 404", func(t *testing.T) {
+		mustEqual(t, "bukan angka", e.call(t, "uid-1", http.MethodPut, "/api/child/abc/mascot", map[string]string{"mascot_id": "Badak"}).Code, http.StatusBadRequest)
+		mustEqual(t, "tidak ada", e.call(t, "uid-1", http.MethodPut, "/api/child/9999/mascot", map[string]string{"mascot_id": "Badak"}).Code, http.StatusNotFound)
+	})
+}
+
 // ---------- update email ----------
 
 func TestUpdateUserEmail(t *testing.T) {
@@ -330,17 +378,58 @@ func TestUpdateUserEmail(t *testing.T) {
 
 // ---------- foto profil ----------
 
-func photoBody(t *testing.T) (*bytes.Buffer, string) {
+var (
+	jpegHeader = []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}
+	pngHeader  = []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+)
+
+// photoBody membuat unggahan multipart; [content] adalah isi berkas dan [filename] nama dari klien.
+func photoBody(t *testing.T, filename string, content []byte) (*bytes.Buffer, string) {
 	t.Helper()
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("photo", "me.jpg")
+	part, err := writer.CreateFormFile("photo", filename)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = part.Write([]byte("fake-image-bytes"))
+	_, _ = part.Write(content)
 	_ = writer.Close()
 	return body, writer.FormDataContentType()
+}
+
+func withJPEG(n int) []byte {
+	content := make([]byte, n)
+	copy(content, jpegHeader)
+	return content
+}
+
+// chdirTemp memindahkan direktori kerja ke folder sementara dengan uploads/profiles di dalamnya,
+// karena handler menulis ke ./uploads relatif terhadap direktori kerja.
+func chdirTemp(t *testing.T) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll("uploads/profiles", os.ModePerm); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func uploadedFiles(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir("uploads/profiles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
+}
+
+func (e *env) upload(t *testing.T, uid string, childID uint, filename string, content []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	body, contentType := photoBody(t, filename, content)
+	return e.raw(t, uid, http.MethodPost, "/api/child/upload-photo/"+itoa(childID), body, contentType)
 }
 
 func TestUploadPhoto(t *testing.T) {
@@ -348,32 +437,135 @@ func TestUploadPhoto(t *testing.T) {
 	e.register(t, "uid-1", "a@example.com", "Aira")
 	e.register(t, "uid-2", "b@example.com", "Bimo")
 	victim, _ := e.child(t, "uid-1", "uid-1")
-	path := "/api/child/upload-photo/" + itoa(victim.ID)
-
-	t.Chdir(t.TempDir()) // berkas unggahan ditulis ke ./uploads relatif terhadap direktori kerja
-	if err := os.MkdirAll("uploads/profiles", os.ModePerm); err != nil {
-		t.Fatal(err)
-	}
+	chdirTemp(t)
 
 	t.Run("pengguna lain ditolak dan tidak ada berkas yang tersimpan", func(t *testing.T) {
-		body, contentType := photoBody(t)
-		mustEqual(t, "status", e.raw(t, "uid-2", http.MethodPost, path, body, contentType).Code, http.StatusNotFound)
-
-		entries, _ := os.ReadDir("uploads/profiles")
-		mustEqual(t, "jumlah berkas", len(entries), 0)
+		mustEqual(t, "status", e.upload(t, "uid-2", victim.ID, "me.jpg", withJPEG(100)).Code, http.StatusNotFound)
+		mustEqual(t, "jumlah berkas", len(uploadedFiles(t)), 0)
 	})
 
-	t.Run("pemilik berhasil", func(t *testing.T) {
-		body, contentType := photoBody(t)
-		mustEqual(t, "status", e.raw(t, "uid-1", http.MethodPost, path, body, contentType).Code, http.StatusOK)
+	t.Run("pemilik berhasil dan URL tersimpan", func(t *testing.T) {
+		rec := e.upload(t, "uid-1", victim.ID, "me.jpg", withJPEG(100))
+		mustEqual(t, "status", rec.Code, http.StatusOK)
 
-		entries, _ := os.ReadDir("uploads/profiles")
-		mustEqual(t, "jumlah berkas", len(entries), 1)
+		files := uploadedFiles(t)
+		mustEqual(t, "jumlah berkas", len(files), 1)
+		saved, _ := e.child(t, "uid-1", "uid-1")
+		mustEqual(t, "URL foto di profil", saved.ProfilePhotoURL, "/uploads/profiles/"+files[0])
 	})
 
 	t.Run("id bukan angka dijawab 400", func(t *testing.T) {
-		body, contentType := photoBody(t)
+		body, contentType := photoBody(t, "me.jpg", withJPEG(100))
 		mustEqual(t, "status", e.raw(t, "uid-1", http.MethodPost, "/api/child/upload-photo/abc", body, contentType).Code, http.StatusBadRequest)
+	})
+}
+
+func TestUploadPhoto_OnlyRealImagesAreAccepted(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	chdirTemp(t)
+
+	t.Run("berkas teks yang diberi nama .jpg ditolak (415)", func(t *testing.T) {
+		mustEqual(t, "status", e.upload(t, "uid-1", child.ID, "photo.jpg", []byte("<?php echo 'not an image'; ?>")).Code, http.StatusUnsupportedMediaType)
+		mustEqual(t, "tidak ada berkas tersimpan", len(uploadedFiles(t)), 0)
+	})
+
+	t.Run("jenis lain seperti GIF dan PDF ditolak", func(t *testing.T) {
+		for name, content := range map[string][]byte{"a.gif": []byte("GIF89a......"), "a.pdf": []byte("%PDF-1.4 ......")} {
+			mustEqual(t, "status "+name, e.upload(t, "uid-1", child.ID, name, content).Code, http.StatusUnsupportedMediaType)
+		}
+	})
+
+	t.Run("PNG diterima, dan ekstensi mengikuti ISI berkas, bukan nama kiriman", func(t *testing.T) {
+		mustEqual(t, "status", e.upload(t, "uid-1", child.ID, "lies.jpg", append(append([]byte{}, pngHeader...), make([]byte, 50)...)).Code, http.StatusOK)
+		files := uploadedFiles(t)
+		mustEqual(t, "jumlah berkas", len(files), 1)
+		mustEqual(t, "ekstensi", filepath.Ext(files[0]), ".png")
+	})
+}
+
+func TestUploadPhoto_RejectsAnOversizedFile(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	chdirTemp(t)
+
+	mustEqual(t, "status", e.upload(t, "uid-1", child.ID, "big.jpg", withJPEG(5<<20+1024)).Code, http.StatusRequestEntityTooLarge)
+	mustEqual(t, "tidak ada berkas tersimpan", len(uploadedFiles(t)), 0)
+
+	mustEqual(t, "di bawah batas diterima", e.upload(t, "uid-1", child.ID, "ok.jpg", withJPEG(1<<20)).Code, http.StatusOK)
+}
+
+func TestUploadPhoto_ClientFilenameIsNeverUsed(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	chdirTemp(t)
+
+	mustEqual(t, "status", e.upload(t, "uid-1", child.ID, "../../evil.jpg", withJPEG(100)).Code, http.StatusOK)
+
+	files := uploadedFiles(t)
+	mustEqual(t, "jumlah berkas di folder profil", len(files), 1)
+	if !strings.HasPrefix(files[0], "child-") {
+		t.Errorf("nama berkas %q seharusnya dibuat server", files[0])
+	}
+	if _, err := os.Stat("evil.jpg"); err == nil {
+		t.Error("berkas lolos keluar dari folder profil")
+	}
+}
+
+func TestUploadPhoto_ReplacingThePhotoDeletesTheOldFile(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	chdirTemp(t)
+
+	e.upload(t, "uid-1", child.ID, "first.jpg", withJPEG(100))
+	first := uploadedFiles(t)
+	e.upload(t, "uid-1", child.ID, "second.jpg", withJPEG(200))
+	second := uploadedFiles(t)
+
+	mustEqual(t, "hanya satu berkas tersisa", len(second), 1)
+	if first[0] == second[0] {
+		t.Error("berkas baru seharusnya memakai nama yang berbeda")
+	}
+	saved, _ := e.child(t, "uid-1", "uid-1")
+	mustEqual(t, "profil menunjuk berkas baru", saved.ProfilePhotoURL, "/uploads/profiles/"+second[0])
+}
+
+func TestDeletePhoto(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-2", "b@example.com", "Bimo")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	chdirTemp(t)
+	e.upload(t, "uid-1", child.ID, "me.jpg", withJPEG(100))
+	path := "/api/child/" + itoa(child.ID) + "/photo"
+
+	t.Run("pengguna lain tidak bisa menghapus foto orang lain", func(t *testing.T) {
+		mustEqual(t, "status", e.call(t, "uid-2", http.MethodDelete, path, nil).Code, http.StatusNotFound)
+		mustEqual(t, "berkas masih ada", len(uploadedFiles(t)), 1)
+		still, _ := e.child(t, "uid-1", "uid-1")
+		if still.ProfilePhotoURL == "" {
+			t.Error("URL foto korban terhapus")
+		}
+	})
+
+	t.Run("pemilik menghapus: berkas hilang dan URL dikosongkan", func(t *testing.T) {
+		mustEqual(t, "status", e.call(t, "uid-1", http.MethodDelete, path, nil).Code, http.StatusOK)
+		mustEqual(t, "berkas di disk", len(uploadedFiles(t)), 0)
+		after, _ := e.child(t, "uid-1", "uid-1")
+		mustEqual(t, "URL foto", after.ProfilePhotoURL, "")
+	})
+
+	t.Run("menghapus lagi tetap aman (tidak ada foto)", func(t *testing.T) {
+		mustEqual(t, "status", e.call(t, "uid-1", http.MethodDelete, path, nil).Code, http.StatusOK)
+	})
+
+	t.Run("id bukan angka dijawab 400 dan id yang tidak ada 404", func(t *testing.T) {
+		mustEqual(t, "bukan angka", e.call(t, "uid-1", http.MethodDelete, "/api/child/abc/photo", nil).Code, http.StatusBadRequest)
+		mustEqual(t, "tidak ada", e.call(t, "uid-1", http.MethodDelete, "/api/child/9999/photo", nil).Code, http.StatusNotFound)
 	})
 }
 
@@ -411,4 +603,82 @@ func TestGenerateAudio_CannotUseSomeoneElsesStory(t *testing.T) {
 	})
 
 	mustEqual(t, "status", rec.Code, http.StatusNotFound)
+}
+
+// ---------- feedback ----------
+
+func feedback(category, message string) map[string]string {
+	return map[string]string{"category": category, "message": message, "app_version": "1.0.0+1"}
+}
+
+func TestFeedback_IsStoredForTheAuthenticatedUser(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+
+	rec := e.call(t, "uid-1", http.MethodPost, "/api/feedback", feedback("Bug", "  The audio stops after a minute.  "))
+	mustEqual(t, "status", rec.Code, http.StatusCreated)
+
+	var saved models.Feedback
+	if err := e.db.First(&saved).Error; err != nil {
+		t.Fatalf("feedback tidak tersimpan: %v", err)
+	}
+	mustEqual(t, "kategori dirapikan", saved.Category, "bug")
+	mustEqual(t, "pesan dirapikan", saved.Message, "The audio stops after a minute.")
+	mustEqual(t, "versi aplikasi", saved.AppVersion, "1.0.0+1")
+
+	var user models.User
+	e.db.Where("firebase_uid = ?", "uid-1").First(&user)
+	mustEqual(t, "pemilik adalah pengguna dari token", saved.UserID, user.ID)
+}
+
+func TestFeedback_RejectsInvalidInput(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+
+	bad := []map[string]string{
+		feedback("complaint", "A valid message here"),
+		feedback("", "A valid message here"),
+		feedback("bug", ""),
+		feedback("bug", "   "),
+		feedback("bug", "hi"),
+		feedback("bug", strings.Repeat("a", 1001)),
+		feedback("bug", "bad \x00 control character"),
+	}
+	for _, body := range bad {
+		mustEqual(t, "status untuk "+body["category"]+"/"+body["message"], e.call(t, "uid-1", http.MethodPost, "/api/feedback", body).Code, http.StatusBadRequest)
+	}
+
+	var count int64
+	e.db.Model(&models.Feedback{}).Count(&count)
+	mustEqual(t, "tidak ada yang tersimpan", count, int64(0))
+}
+
+func TestFeedback_ADodgyAppVersionIsDroppedNotRejected(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+
+	body := map[string]string{"category": "idea", "message": "Please add more stories", "app_version": "<script>alert(1)</script>"}
+	mustEqual(t, "status", e.call(t, "uid-1", http.MethodPost, "/api/feedback", body).Code, http.StatusCreated)
+
+	var saved models.Feedback
+	e.db.First(&saved)
+	mustEqual(t, "versi aneh dikosongkan", saved.AppVersion, "")
+}
+
+func TestFeedback_IsRateLimitedPerUser(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-2", "b@example.com", "Bimo")
+
+	for i := 0; i < 5; i++ {
+		mustEqual(t, "pengiriman ke-"+itoa(uint(i+1)), e.call(t, "uid-1", http.MethodPost, "/api/feedback", feedback("idea", "Another good idea")).Code, http.StatusCreated)
+	}
+	mustEqual(t, "pengiriman ke-6", e.call(t, "uid-1", http.MethodPost, "/api/feedback", feedback("idea", "One more idea")).Code, http.StatusTooManyRequests)
+
+	mustEqual(t, "pengguna lain tidak terpengaruh", e.call(t, "uid-2", http.MethodPost, "/api/feedback", feedback("idea", "My first idea")).Code, http.StatusCreated)
+}
+
+func TestFeedback_NeedsARegisteredUser(t *testing.T) {
+	e := newTestEnv(t)
+	mustEqual(t, "status", e.call(t, "uid-never-registered", http.MethodPost, "/api/feedback", feedback("bug", "Something is wrong")).Code, http.StatusNotFound)
 }
