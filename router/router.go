@@ -25,6 +25,7 @@ func New(db *gorm.DB, verifier auth.Verifier) *gin.Engine {
 		api.GET("/stories", handlers.ListStories(db))
 		api.GET("/stories/:id", handlers.GetStory(db))
 		api.PUT("/stories/:id/favorite", handlers.SetStoryFavorite(db))
+		api.DELETE("/stories/:id", handlers.DeleteStory(db))
 		api.POST("/audio/generate_audio", handlers.GeneratedAudio(db))
 		api.POST("/feedback", handlers.SubmitFeedback(db))
 	}
