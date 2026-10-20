@@ -79,3 +79,38 @@ func UpdateChildName(db *gorm.DB) gin.HandlerFunc {
 		}
 	}
 }
+
+func UpdateChildMascot(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid child id"})
+			return
+		}
+
+		var input struct {
+			MascotID string `json:"mascot_id"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Input Data"})
+			return
+		}
+		mascot, err := validation.Mascot(input.MascotID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		child, err := findOwnedChild(db, auth.IdentityFrom(c).UID, uint(id))
+		if err != nil {
+			lookupFailed(c, err, "Child not found")
+			return
+		}
+
+		if err := db.Model(&models.Child{}).Where("id = ?", child.ID).Update("mascot_id", mascot).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update database"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "Mascot updated successfully", "mascot_id": mascot})
+	}
+}

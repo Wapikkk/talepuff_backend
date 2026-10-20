@@ -9,6 +9,12 @@ type RegisterRequest struct {
 	Interests   []string `json:"interests"`
 }
 
+type FeedbackRequest struct {
+	Category   string `json:"category" binding:"required"`
+	Message    string `json:"message" binding:"required"`
+	AppVersion string `json:"app_version"`
+}
+
 type UpdateEmailRequest struct {
 	Email string `json:"email" binding:"required"`
 }

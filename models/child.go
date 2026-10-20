@@ -14,5 +14,6 @@ type Child struct {
 	Gender          string         `json:"gender"`
 	Interests       pq.StringArray `gorm:"type:text[]" json:"interests"`
 	ProfilePhotoURL string         `json:"profile_photo_url" gorm:"type:text"`
+	MascotID        string         `json:"mascot_id" gorm:"column:mascot_id;not null;default:Harimau"`
 	CreatedAt       time.Time      `json:"created_at"`
 }

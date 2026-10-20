@@ -33,6 +33,7 @@ func main() {
 		&models.User{},
 		&models.Child{},
 		&models.Story{},
+		&models.Feedback{},
 	)
 
 	verifier, err := auth.NewFirebaseVerifier(context.Background(), os.Getenv("FIREBASE_PROJECT_ID"))
