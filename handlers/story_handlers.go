@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"talepuff_backend/auth"
 	"talepuff_backend/dto"
 	"talepuff_backend/models"
 
@@ -19,9 +20,8 @@ func GenerateStory(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		var child models.Child
-		if err := db.First(&child, "id = ?", req.ChildID).Error; err != nil {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Child profile not found"})
+		if _, err := findOwnedChild(db, auth.IdentityFrom(c).UID, req.ChildID); err != nil {
+			lookupFailed(c, err, "Child profile not found")
 			return
 		}
 
@@ -69,9 +69,9 @@ func GeneratedAudio(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		var story models.Story
-		if err := db.First(&story, req.StoryID).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Story not found"})
+		story, err := findOwnedStory(db, auth.IdentityFrom(c).UID, req.StoryID)
+		if err != nil {
+			lookupFailed(c, err, "Story not found")
 			return
 		}
 
