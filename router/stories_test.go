@@ -313,6 +313,69 @@ func TestSetStoryFavorite(t *testing.T) {
 	})
 }
 
+func TestDeleteStory(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-2", "b@example.com", "Bimo")
+	child, _ := e.child(t, "uid-1", "uid-1")
+
+	var removed []string
+	fakeAI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			removed = append(removed, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	exists := func(id uint) bool {
+		var count int64
+		e.db.Model(&models.Story{}).Where("id = ?", id).Count(&count)
+		return count == 1
+	}
+
+	t.Run("pengguna lain tidak bisa menghapus, ceritanya tetap ada", func(t *testing.T) {
+		story := e.seedStory(t, child.ID, "Not yours", time.Hour, nil)
+		mustEqual(t, "status", e.call(t, "uid-2", http.MethodDelete, "/api/stories/"+itoa(story.ID), nil).Code, http.StatusNotFound)
+		mustEqual(t, "masih ada", exists(story.ID), true)
+	})
+
+	t.Run("pemilik menghapus cerita, dan file audionya diminta dihapus", func(t *testing.T) {
+		removed = nil
+		story := e.seedStory(t, child.ID, "With audio", time.Hour, func(s *models.Story) {
+			s.AudioURL = "http://localhost:8000/audio/story_123_Warm.wav"
+		})
+		mustEqual(t, "status", e.call(t, "uid-1", http.MethodDelete, "/api/stories/"+itoa(story.ID), nil).Code, http.StatusOK)
+		mustEqual(t, "sudah hilang", exists(story.ID), false)
+		mustEqual(t, "audio diminta dihapus", len(removed), 1)
+		mustEqual(t, "jalur", removed[0], "/generated_audio/story_123_Warm.wav")
+		for _, title := range titles(decodeList(t, e.listStories(t, "uid-1", childQuery(child, "")))) {
+			if title == "With audio" {
+				t.Errorf("cerita yang dihapus masih muncul di daftar")
+			}
+		}
+	})
+
+	t.Run("cerita tanpa audio dihapus tanpa memanggil layanan AI", func(t *testing.T) {
+		removed = nil
+		story := e.seedStory(t, child.ID, "No audio", time.Hour, nil)
+		mustEqual(t, "status", e.call(t, "uid-1", http.MethodDelete, "/api/stories/"+itoa(story.ID), nil).Code, http.StatusOK)
+		mustEqual(t, "tidak memanggil AI", len(removed), 0)
+	})
+
+	t.Run("cerita tetap terhapus walau layanan AI mati", func(t *testing.T) {
+		story := e.seedStory(t, child.ID, "AI down", time.Hour, func(s *models.Story) {
+			s.AudioURL = "http://localhost:8000/audio/story_9_Brave.wav"
+		})
+		t.Setenv("AI_SERVICE_URL", "http://127.0.0.1:1")
+		mustEqual(t, "status", e.call(t, "uid-1", http.MethodDelete, "/api/stories/"+itoa(story.ID), nil).Code, http.StatusOK)
+		mustEqual(t, "sudah hilang", exists(story.ID), false)
+	})
+
+	t.Run("id tidak valid dan cerita yang sudah terhapus", func(t *testing.T) {
+		mustEqual(t, "bukan angka", e.call(t, "uid-1", http.MethodDelete, "/api/stories/abc", nil).Code, http.StatusBadRequest)
+		mustEqual(t, "tidak ada", e.call(t, "uid-1", http.MethodDelete, "/api/stories/999999", nil).Code, http.StatusNotFound)
+	})
+}
+
 // ---------- pembuatan cerita dan audio dengan layanan AI palsu ----------
 
 func fakeAI(t *testing.T, handler http.HandlerFunc) *httptest.Server {
