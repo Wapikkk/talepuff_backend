@@ -1,14 +1,19 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
+	"talepuff_backend/auth"
 	"talepuff_backend/dto"
 	"talepuff_backend/models"
+	"talepuff_backend/validation"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
 	"gorm.io/gorm"
 )
+
+var errProfileExists = errors.New("profile already exists")
 
 func RegisterUser(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -18,56 +23,92 @@ func RegisterUser(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		err := db.Transaction(func(tx *gorm.DB) error {
+		uid := auth.IdentityFrom(c).UID
+		if req.FirebaseUID != "" && req.FirebaseUID != uid {
+			c.JSON(http.StatusForbidden, gin.H{"error": "firebase_uid does not match the authenticated user"})
+			return
+		}
+
+		childName, err := validation.ChildName(req.ChildName)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		email, err := validation.Email(req.Email)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		err = db.Transaction(func(tx *gorm.DB) error {
 			user := models.User{
-				FirebaseUID: req.FirebaseUID,
-				Email:       req.Email,
+				FirebaseUID: uid,
+				Email:       email,
+			}
+			if err := tx.Where(models.User{FirebaseUID: uid}).FirstOrCreate(&user).Error; err != nil {
+				return err
 			}
 
-			if err := tx.Where(models.User{FirebaseUID: req.FirebaseUID}).FirstOrCreate(&user).Error; err != nil {
+			var existing models.Child
+			switch err := tx.Where("user_id = ?", user.ID).First(&existing).Error; {
+			case err == nil:
+				return errProfileExists
+			case !errors.Is(err, gorm.ErrRecordNotFound):
 				return err
 			}
 
 			child := models.Child{
 				UserID:    user.ID,
-				Name:      req.ChildName,
+				Name:      childName,
 				Age:       &req.Age,
 				Gender:    req.Gender,
 				Interests: pq.StringArray(req.Interests),
 			}
-
-			if err := tx.Where(models.Child{UserID: user.ID}).Assign(child).FirstOrCreate(&child).Error; err != nil {
-				return err
-			}
-
-			return nil
+			return tx.Create(&child).Error
 		})
 
-		if err != nil {
+		switch {
+		case errors.Is(err, errProfileExists):
+			c.JSON(http.StatusConflict, gin.H{"error": "Profile already exists for this account"})
+		case errors.Is(err, gorm.ErrDuplicatedKey):
+			c.JSON(http.StatusConflict, gin.H{"error": "Email is already registered"})
+		case err != nil:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save data"})
-			return
+		default:
+			c.JSON(http.StatusOK, gin.H{"message": "User and Child data saved successfully!"})
 		}
-
-		c.JSON(http.StatusOK, gin.H{"message": "User and Child data saved successfully!"})
 	}
 }
 
 func UpdateUserEmail(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.Param("uid")
+		if uid != auth.IdentityFrom(c).UID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You can only change your own email"})
+			return
+		}
 
 		var input dto.UpdateEmailRequest
 		if err := c.ShouldBindJSON(&input); err != nil {
-			c.JSON(400, gin.H{"error": "Invalid Input"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Input"})
+			return
+		}
+		email, err := validation.Email(input.Email)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 
-		result := db.Table("users").Where("firebase_uid = ?", uid).Update("email", input.Email)
-		if result.Error != nil {
-			c.JSON(500, gin.H{"error": "Failed to Update Database"})
-			return
+		result := db.Model(&models.User{}).Where("firebase_uid = ?", uid).Update("email", email)
+		switch {
+		case errors.Is(result.Error, gorm.ErrDuplicatedKey):
+			c.JSON(http.StatusConflict, gin.H{"error": "Email is already used by another account"})
+		case result.Error != nil:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to Update Database"})
+		case result.RowsAffected == 0:
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		default:
+			c.JSON(http.StatusOK, gin.H{"message": "Email update successfully"})
 		}
-
-		c.JSON(200, gin.H{"message": "Email update successfully"})
 	}
 }

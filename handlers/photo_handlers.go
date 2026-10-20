@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
+	"talepuff_backend/auth"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,7 +14,17 @@ import (
 
 func UploadChildPhotoHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		childID := c.Param("id")
+		parsedID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid child id"})
+			return
+		}
+		child, err := findOwnedChild(db, auth.IdentityFrom(c).UID, uint(parsedID))
+		if err != nil {
+			lookupFailed(c, err, "Child not found")
+			return
+		}
+		childID := child.ID
 
 		file, err := c.FormFile("photo")
 		if err != nil {

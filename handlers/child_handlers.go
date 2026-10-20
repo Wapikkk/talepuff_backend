@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
+	"talepuff_backend/auth"
 	"talepuff_backend/models"
+	"talepuff_backend/validation"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -11,6 +14,10 @@ import (
 func GetChildInfo(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.Param("uid")
+		if uid != auth.IdentityFrom(c).UID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You can only read your own profile"})
+			return
+		}
 		var user models.User
 		var child models.Child
 
@@ -33,27 +40,42 @@ func GetChildInfo(db *gorm.DB) gin.HandlerFunc {
 
 func UpdateChildName(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id := c.Param("id")
+		id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid child id"})
+			return
+		}
 
 		var input struct {
 			Name string `json:"name"`
 		}
-
 		if err := c.ShouldBindJSON(&input); err != nil {
-			c.JSON(400, gin.H{"error": "Invalid Input Data"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Input Data"})
+			return
+		}
+		name, err := validation.ChildName(input.Name)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 
-		result := db.Table("children").Where("id = ?", id).Update("name", input.Name)
-
-		if result.Error != nil {
-			c.JSON(500, gin.H{"error": "Failed to update database"})
+		child, err := findOwnedChild(db, auth.IdentityFrom(c).UID, uint(id))
+		if err != nil {
+			lookupFailed(c, err, "Child not found")
 			return
 		}
 
-		c.JSON(200, gin.H{
-			"message":  "Name updated successfully",
-			"new_name": input.Name,
-		})
+		result := db.Model(&models.Child{}).Where("id = ?", child.ID).Update("name", name)
+		switch {
+		case result.Error != nil:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update database"})
+		case result.RowsAffected == 0:
+			c.JSON(http.StatusNotFound, gin.H{"error": "Child not found"})
+		default:
+			c.JSON(http.StatusOK, gin.H{
+				"message":  "Name updated successfully",
+				"new_name": name,
+			})
+		}
 	}
 }

@@ -1,14 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
-	"talepuff_backend/handlers"
+	"talepuff_backend/auth"
 	"talepuff_backend/models"
+	"talepuff_backend/router"
 
 	"os"
 
-	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -22,7 +23,7 @@ func main() {
 
 	dsn := os.Getenv("DB_URL")
 
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{TranslateError: true})
 	if err != nil {
 		log.Fatal("Gagal koneksi database:", err)
 	}
@@ -34,19 +35,12 @@ func main() {
 		&models.Story{},
 	)
 
-	r := gin.Default()
-	r.Static("/uploads", "./uploads")
-
-	api := r.Group("/api")
-	{
-		api.POST("/register", handlers.RegisterUser(db))
-		api.GET("/child/:uid", handlers.GetChildInfo(db))
-		api.POST("/child/upload-photo/:id", handlers.UploadChildPhotoHandler(db))
-		api.PUT("/child/update-name/:id", handlers.UpdateChildName(db))
-		api.PUT("/user/update-email/:uid", handlers.UpdateUserEmail(db))
-		api.POST("/story/generate", handlers.GenerateStory(db))
-		api.POST("/audio/generate_audio", handlers.GeneratedAudio(db))
+	verifier, err := auth.NewFirebaseVerifier(context.Background(), os.Getenv("FIREBASE_PROJECT_ID"))
+	if err != nil {
+		log.Fatal("Gagal menyiapkan verifikasi token Firebase: ", err)
 	}
+
+	r := router.New(db, verifier)
 
 	fmt.Println("Server is running on port 8080...")
 	os.MkdirAll("./uploads/profiles", os.ModePerm)
