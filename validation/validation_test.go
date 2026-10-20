@@ -112,3 +112,32 @@ func TestMascot(t *testing.T) {
 		t.Errorf("maskot bawaan harus sama dengan default di kolom database")
 	}
 }
+
+func TestVoiceTone(t *testing.T) {
+	for _, ok := range VoiceTones {
+		if got, err := VoiceTone(ok); err != nil || got != ok {
+			t.Errorf("VoiceTone(%q) = %q, %v", ok, got, err)
+		}
+	}
+	if got, err := VoiceTone("  Warm "); err != nil || got != "Warm" {
+		t.Errorf("dirapikan menjadi %q, %v", got, err)
+	}
+	for _, bad := range []string{"", "warm", "Robot", "Warm,Brave"} {
+		if _, err := VoiceTone(bad); err == nil {
+			t.Errorf("VoiceTone(%q) seharusnya ditolak", bad)
+		}
+	}
+}
+
+func TestLanguage(t *testing.T) {
+	for input, want := range map[string]string{"": StoryLanguage, "  ": StoryLanguage, "Basic English": StoryLanguage, " Basic English ": StoryLanguage} {
+		if got, err := Language(input); err != nil || got != want {
+			t.Errorf("Language(%q) = %q, %v", input, got, err)
+		}
+	}
+	for _, bad := range []string{"Mixed (EN + ID)", "Bahasa Indonesia", "basic english", "English"} {
+		if _, err := Language(bad); err == nil {
+			t.Errorf("Language(%q) seharusnya ditolak", bad)
+		}
+	}
+}

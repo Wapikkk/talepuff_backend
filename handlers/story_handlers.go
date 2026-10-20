@@ -3,14 +3,89 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"strings"
 	"talepuff_backend/auth"
 	"talepuff_backend/dto"
 	"talepuff_backend/models"
+	"talepuff_backend/validation"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+const (
+	maxStoredMoodRunes        = 200
+	maxStoredDescriptionRunes = 1000
+)
+
+var aiClient = &http.Client{Timeout: 3 * time.Minute}
+
+var errAIDecode = errors.New("failed to read the AI service response")
+
+func aiBaseURL() string {
+	if url := strings.TrimRight(strings.TrimSpace(os.Getenv("AI_SERVICE_URL")), "/"); url != "" {
+		return url
+	}
+	return "http://localhost:8000"
+}
+
+func callAI(path string, payload, out any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	resp, err := aiClient.Post(aiBaseURL()+path, "application/json", bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return fmt.Errorf("AI service answered %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return errAIDecode
+	}
+	return nil
+}
+
+func truncateRunes(text string, max int) string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) > max {
+		runes = runes[:max]
+	}
+	return string(runes)
+}
+
+func storyDTO(story models.Story, full bool) dto.StoryDTO {
+	result := dto.StoryDTO{
+		ID:            story.ID,
+		ChildID:       story.ChildID,
+		CharacterName: story.CharacterName,
+		Theme:         story.Theme,
+		Mood:          story.Mood,
+		Language:      story.Language,
+		LengthMinutes: story.LengthMinutes,
+		Title:         story.Title,
+		AudioURL:      story.AudioURL,
+		VoiceTone:     story.VoiceTone,
+		IsFavorite:    story.IsFavorite,
+		PlayCount:     story.PlayCount,
+		CreatedAt:     story.CreatedAt,
+	}
+	if full {
+		result.Content = story.Content
+		result.Description = story.Description
+	}
+	return result
+}
 
 func GenerateStory(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -20,23 +95,25 @@ func GenerateStory(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
+		language, err := validation.Language(req.Language)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		req.Language = language
+
 		if _, err := findOwnedChild(db, auth.IdentityFrom(c).UID, req.ChildID); err != nil {
 			lookupFailed(c, err, "Child profile not found")
 			return
 		}
 
-		pythonPayload, _ := json.Marshal(req)
-		pythonAPIURL := "http://localhost:8000/generate_story"
-		resp, err := http.Post(pythonAPIURL, "application/json", bytes.NewBuffer(pythonPayload))
-		if err != nil || resp.StatusCode != http.StatusOK {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to connect to AI service"})
-			return
-		}
-		defer resp.Body.Close()
-
 		var aiResult dto.PythonResponse
-		if err := json.NewDecoder(resp.Body).Decode(&aiResult); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read AI response"})
+		if err := callAI("/generate_story", req, &aiResult); err != nil {
+			if errors.Is(err, errAIDecode) {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read AI response"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to connect to AI service"})
 			return
 		}
 
@@ -44,7 +121,10 @@ func GenerateStory(db *gorm.DB) gin.HandlerFunc {
 			ChildID:       req.ChildID,
 			CharacterName: req.CharacterName,
 			Theme:         req.Theme,
+			Mood:          truncateRunes(req.Mood, maxStoredMoodRunes),
+			Description:   truncateRunes(req.Description, maxStoredDescriptionRunes),
 			Language:      req.Language,
+			LengthMinutes: req.LengthMinutes,
 			Title:         aiResult.Title,
 			Content:       aiResult.Response,
 		}
@@ -56,7 +136,7 @@ func GenerateStory(db *gorm.DB) gin.HandlerFunc {
 
 		c.JSON(http.StatusOK, gin.H{
 			"message": "Story generated successfully",
-			"data":    newStory,
+			"data":    storyDTO(newStory, true),
 		})
 	}
 }
@@ -68,6 +148,11 @@ func GeneratedAudio(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		voiceTone, err := validation.VoiceTone(req.VoiceTone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 
 		story, err := findOwnedStory(db, auth.IdentityFrom(c).UID, req.StoryID)
 		if err != nil {
@@ -75,31 +160,26 @@ func GeneratedAudio(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		pythonPayload := map[string]string{
-			"story_text": story.Content,
-			"voice_tone": req.VoiceTone,
-		}
-		pythonReqBody, _ := json.Marshal(pythonPayload)
-
-		resp, err := http.Post("http://localhost:8000/generate_audio", "application/json", bytes.NewBuffer(pythonReqBody))
-		if err != nil || resp.StatusCode != 200 {
+		payload := map[string]string{"story_text": story.Content, "voice_tone": voiceTone}
+		var aiResult dto.PythonAudioResponse
+		if err := callAI("/generate_audio", payload, &aiResult); err != nil {
+			if errors.Is(err, errAIDecode) {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse TTS response"})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to contact TTS service"})
 			return
 		}
-		defer resp.Body.Close()
 
-		var pythonResp dto.PythonAudioResponse
-		if err := json.NewDecoder(resp.Body).Decode(&pythonResp); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse TTS response"})
+		if err := db.Model(&models.Story{}).Where("id = ?", story.ID).
+			Updates(map[string]any{"audio_url": aiResult.AudioURL, "voice_tone": voiceTone}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save audio"})
 			return
 		}
 
-		story.AudioURL = pythonResp.AudioURL
-		db.Save(&story)
-
 		c.JSON(http.StatusOK, gin.H{
 			"message":   "Audio generated successfully",
-			"audio_url": story.AudioURL,
+			"audio_url": aiResult.AudioURL,
 		})
 	}
 }

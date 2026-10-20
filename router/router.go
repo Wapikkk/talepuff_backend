@@ -22,6 +22,9 @@ func New(db *gorm.DB, verifier auth.Verifier) *gin.Engine {
 		api.PUT("/child/update-name/:id", handlers.UpdateChildName(db))
 		api.PUT("/user/update-email/:uid", handlers.UpdateUserEmail(db))
 		api.POST("/story/generate", handlers.GenerateStory(db))
+		api.GET("/stories", handlers.ListStories(db))
+		api.GET("/stories/:id", handlers.GetStory(db))
+		api.PUT("/stories/:id/favorite", handlers.SetStoryFavorite(db))
 		api.POST("/audio/generate_audio", handlers.GeneratedAudio(db))
 		api.POST("/feedback", handlers.SubmitFeedback(db))
 	}
