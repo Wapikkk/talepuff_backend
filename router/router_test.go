@@ -68,10 +68,10 @@ func newTestEnv(t *testing.T) *env {
 		t.Fatalf("menolak menjalankan tes di database %q: namanya harus berakhiran _test", name)
 	}
 
-	if err := db.AutoMigrate(&models.User{}, &models.Child{}, &models.Story{}, &models.Feedback{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Child{}, &models.Story{}, &models.StoryJob{}, &models.Feedback{}); err != nil {
 		t.Fatalf("migrasi gagal: %v", err)
 	}
-	if err := db.Exec("TRUNCATE TABLE feedbacks, stories, children, users RESTART IDENTITY CASCADE").Error; err != nil {
+	if err := db.Exec("TRUNCATE TABLE feedbacks, story_jobs, stories, children, users RESTART IDENTITY CASCADE").Error; err != nil {
 		t.Fatalf("gagal mengosongkan tabel tes: %v", err)
 	}
 
@@ -578,7 +578,7 @@ func TestGenerateStory_CannotUseSomeoneElsesChild(t *testing.T) {
 	victim, _ := e.child(t, "uid-1", "uid-1")
 
 	rec := e.call(t, "uid-2", http.MethodPost, "/api/story/generate", map[string]any{
-		"child_id": victim.ID, "character_name": "Aira", "theme": "Daily", "mood": "Calm", "length_minutes": 3,
+		"child_id": victim.ID, "character_name": "Aira", "theme": "Daily", "mood": "Calm", "length_minutes": 3, "voice_tone": "Warm",
 	})
 
 	mustEqual(t, "status", rec.Code, http.StatusNotFound)

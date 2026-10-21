@@ -28,6 +28,10 @@ var aiClient = &http.Client{Timeout: 3 * time.Minute}
 
 var errAIDecode = errors.New("failed to read the AI service response")
 
+type aiStatusError struct{ Status int }
+
+func (e *aiStatusError) Error() string { return fmt.Sprintf("AI service answered %d", e.Status) }
+
 func aiBaseURL() string {
 	if url := strings.TrimRight(strings.TrimSpace(os.Getenv("AI_SERVICE_URL")), "/"); url != "" {
 		return url
@@ -48,7 +52,7 @@ func callAI(path string, payload, out any) error {
 
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return fmt.Errorf("AI service answered %d", resp.StatusCode)
+		return &aiStatusError{Status: resp.StatusCode}
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return errAIDecode
@@ -85,60 +89,6 @@ func storyDTO(story models.Story, full bool) dto.StoryDTO {
 		result.Description = story.Description
 	}
 	return result
-}
-
-func GenerateStory(db *gorm.DB) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req dto.GenerateStoryRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		language, err := validation.Language(req.Language)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		req.Language = language
-
-		if _, err := findOwnedChild(db, auth.IdentityFrom(c).UID, req.ChildID); err != nil {
-			lookupFailed(c, err, "Child profile not found")
-			return
-		}
-
-		var aiResult dto.PythonResponse
-		if err := callAI("/generate_story", req, &aiResult); err != nil {
-			if errors.Is(err, errAIDecode) {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read AI response"})
-				return
-			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to connect to AI service"})
-			return
-		}
-
-		newStory := models.Story{
-			ChildID:       req.ChildID,
-			CharacterName: req.CharacterName,
-			Theme:         req.Theme,
-			Mood:          truncateRunes(req.Mood, maxStoredMoodRunes),
-			Description:   truncateRunes(req.Description, maxStoredDescriptionRunes),
-			Language:      req.Language,
-			LengthMinutes: req.LengthMinutes,
-			Title:         aiResult.Title,
-			Content:       aiResult.Response,
-		}
-
-		if err := db.Create(&newStory).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save story to database"})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Story generated successfully",
-			"data":    storyDTO(newStory, true),
-		})
-	}
 }
 
 func GeneratedAudio(db *gorm.DB) gin.HandlerFunc {

@@ -28,6 +28,16 @@ func findOwnedStory(db *gorm.DB, uid string, storyID uint) (models.Story, error)
 	return story, err
 }
 
+func findOwnedJob(db *gorm.DB, uid string, jobID uint) (models.StoryJob, error) {
+	var job models.StoryJob
+	err := db.Select("story_jobs.*").
+		Joins("JOIN children ON children.id = story_jobs.child_id").
+		Joins("JOIN users ON users.id = children.user_id").
+		Where("story_jobs.id = ? AND users.firebase_uid = ?", jobID, uid).
+		First(&job).Error
+	return job, err
+}
+
 func lookupFailed(c *gin.Context, err error, notFoundMessage string) {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": notFoundMessage})

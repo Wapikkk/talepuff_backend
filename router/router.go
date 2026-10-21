@@ -11,6 +11,7 @@ import (
 func New(db *gorm.DB, verifier auth.Verifier) *gin.Engine {
 	r := gin.Default()
 	r.Static("/uploads", "./uploads")
+	r.GET("/api/health", handlers.Health)
 
 	api := r.Group("/api", auth.Middleware(verifier))
 	{
@@ -21,7 +22,8 @@ func New(db *gorm.DB, verifier auth.Verifier) *gin.Engine {
 		api.PUT("/child/:id/mascot", handlers.UpdateChildMascot(db))
 		api.PUT("/child/update-name/:id", handlers.UpdateChildName(db))
 		api.PUT("/user/update-email/:uid", handlers.UpdateUserEmail(db))
-		api.POST("/story/generate", handlers.GenerateStory(db))
+		api.POST("/story/generate", handlers.StartStoryJob(db))
+		api.GET("/story/jobs/:id", handlers.GetStoryJob(db))
 		api.GET("/stories", handlers.ListStories(db))
 		api.GET("/stories/:id", handlers.GetStory(db))
 		api.PUT("/stories/:id/favorite", handlers.SetStoryFavorite(db))
