@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"talepuff_backend/auth"
+	"talepuff_backend/handlers"
 	"talepuff_backend/models"
 	"talepuff_backend/router"
 
@@ -33,8 +34,11 @@ func main() {
 		&models.User{},
 		&models.Child{},
 		&models.Story{},
+		&models.StoryJob{},
 		&models.Feedback{},
 	)
+
+	handlers.FailInterruptedJobs(db)
 
 	verifier, err := auth.NewFirebaseVerifier(context.Background(), os.Getenv("FIREBASE_PROJECT_ID"))
 	if err != nil {

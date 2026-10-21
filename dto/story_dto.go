@@ -11,12 +11,14 @@ type GenerateStoryRequest struct {
 	Language      string `json:"language"`
 	Title         string `json:"title"`
 	Description   string `json:"description"`
+	VoiceTone     string `json:"voice_tone"`
 }
 
 type PythonResponse struct {
-	Status   string `json:"status"`
-	Title    string `json:"title"`
-	Response string `json:"response"`
+	Status   string   `json:"status"`
+	Title    string   `json:"title"`
+	Response string   `json:"response"`
+	Flags    []string `json:"flags"`
 }
 
 type AudiGeneratedRequest struct {
@@ -54,4 +56,13 @@ type StoryListResponse struct {
 
 type SetFavoriteRequest struct {
 	Favorite *bool `json:"favorite" binding:"required"`
+}
+
+type StoryJobDTO struct {
+	ID           uint      `json:"id"`
+	Status       string    `json:"status"`
+	Story        *StoryDTO `json:"story,omitempty"`
+	ErrorCode    string    `json:"error_code,omitempty"`
+	IdeaDropped  bool      `json:"idea_dropped"`
+	NameReplaced bool      `json:"name_replaced"`
 }

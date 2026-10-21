@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"talepuff_backend/handlers"
 	"talepuff_backend/models"
 )
 
@@ -94,6 +95,9 @@ func TestStories_EveryRouteRequiresAToken(t *testing.T) {
 		{http.MethodGet, "/api/stories?child_id=1"},
 		{http.MethodGet, "/api/stories/1"},
 		{http.MethodPut, "/api/stories/1/favorite"},
+		{http.MethodDelete, "/api/stories/1"},
+		{http.MethodPost, "/api/story/generate"},
+		{http.MethodGet, "/api/story/jobs/1"},
 	} {
 		mustEqual(t, route.method+" "+route.path, e.call(t, "", route.method, route.path, nil).Code, http.StatusUnauthorized)
 	}
@@ -386,102 +390,368 @@ func fakeAI(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	return server
 }
 
-func TestGenerateStory_SavesEverythingTheListNeedsAndAnswersWithLowercaseKeys(t *testing.T) {
+type jobJSON struct {
+	ID           uint       `json:"id"`
+	Status       string     `json:"status"`
+	Story        *storyJSON `json:"story"`
+	ErrorCode    string     `json:"error_code"`
+	IdeaDropped  bool       `json:"idea_dropped"`
+	NameReplaced bool       `json:"name_replaced"`
+}
+
+func jobPayload(child childJSON, overrides map[string]any) map[string]any {
+	payload := map[string]any{
+		"child_id": child.ID, "character_name": "Aira", "theme": "Daily", "mood": "Calm",
+		"length_minutes": 3, "language": "Basic English", "voice_tone": "Warm",
+	}
+	for key, value := range overrides {
+		payload[key] = value
+	}
+	return payload
+}
+
+func (e *env) startJob(t *testing.T, uid string, payload map[string]any) (uint, *httptest.ResponseRecorder) {
+	t.Helper()
+	rec := e.call(t, uid, http.MethodPost, "/api/story/generate", payload)
+	var body struct {
+		JobID uint `json:"job_id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	return body.JobID, rec
+}
+
+func (e *env) job(t *testing.T, uid string, id uint) (jobJSON, int) {
+	t.Helper()
+	rec := e.call(t, uid, http.MethodGet, "/api/story/jobs/"+itoa(id), nil)
+	var job jobJSON
+	_ = json.Unmarshal(rec.Body.Bytes(), &job)
+	return job, rec.Code
+}
+
+func (e *env) waitForStatus(t *testing.T, uid string, id uint, want ...string) jobJSON {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		job, code := e.job(t, uid, id)
+		mustEqual(t, "status HTTP", code, http.StatusOK)
+		for _, status := range want {
+			if job.Status == status {
+				return job
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job %d berstatus %q, menunggu %v", id, job.Status, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (e *env) finishJob(t *testing.T, uid string, id uint) jobJSON {
+	t.Helper()
+	return e.waitForStatus(t, uid, id, "done", "failed")
+}
+
+func releaseOnce(t *testing.T, gates ...chan struct{}) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, gate := range gates {
+			select {
+			case <-gate:
+			default:
+				close(gate)
+			}
+		}
+	})
+}
+
+func healthyAI(t *testing.T, received *map[string]any) {
+	t.Helper()
+	fakeAI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/generate_story":
+			if received != nil {
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, received)
+			}
+			_, _ = w.Write([]byte(`{"status":"success","title":"Moon Rocket","response":"Aira flies to the moon.","flags":[]}`))
+		case "/generate_audio":
+			_, _ = w.Write([]byte(`{"status":"success","audio_url":"http://audio.example/a.wav"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+func TestStoryJob_WritesTheStoryThenTheVoiceAndSavesEverythingTheListNeeds(t *testing.T) {
 	e := newTestEnv(t)
 	e.register(t, "uid-1", "a@example.com", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
-
 	var received map[string]any
-	fakeAI(t, func(w http.ResponseWriter, r *http.Request) {
-		mustEqual(t, "jalur", r.URL.Path, "/generate_story")
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &received)
-		_, _ = w.Write([]byte(`{"status":"success","title":"Moon Rocket","response":"Aira flies to the moon."}`))
-	})
+	healthyAI(t, &received)
 
-	rec := e.call(t, "uid-1", http.MethodPost, "/api/story/generate", map[string]any{
-		"child_id": child.ID, "character_name": "Aira", "theme": "Adventure", "mood": "Calm, Brave",
-		"length_minutes": 5, "language": "Basic English", "description": "A trip to the moon",
-	})
+	id, rec := e.startJob(t, "uid-1", jobPayload(child, map[string]any{
+		"theme": "Adventure", "mood": "Calm, Brave", "length_minutes": 5, "description": "A trip to the moon",
+	}))
+	mustEqual(t, "status", rec.Code, http.StatusAccepted)
+	if id == 0 {
+		t.Fatalf("job_id kosong: %s", rec.Body.String())
+	}
 
-	mustEqual(t, "status", rec.Code, http.StatusOK)
+	job := e.finishJob(t, "uid-1", id)
+	mustEqual(t, "selesai", job.Status, "done")
 	mustEqual(t, "mood diteruskan ke AI", received["mood"], any("Calm, Brave"))
-
-	var body struct {
-		Data storyJSON `json:"data"`
+	if job.Story == nil || job.Story.ID == 0 {
+		t.Fatalf("job selesai harus membawa cerita lengkap: %+v", job)
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Data.ID == 0 {
-		t.Fatalf("data.id kosong: aplikasi membaca kunci 'id' (bukan 'ID'). Balasan: %s", rec.Body.String())
-	}
-	mustEqual(t, "judul", body.Data.Title, "Moon Rocket")
-	mustEqual(t, "isi", body.Data.Content, "Aira flies to the moon.")
+	mustEqual(t, "judul", job.Story.Title, "Moon Rocket")
+	mustEqual(t, "isi", job.Story.Content, "Aira flies to the moon.")
+	mustEqual(t, "audio", job.Story.AudioURL, "http://audio.example/a.wav")
+	mustEqual(t, "suara", job.Story.VoiceTone, "Warm")
 
 	var saved models.Story
-	if err := e.db.First(&saved, body.Data.ID).Error; err != nil {
+	if err := e.db.First(&saved, job.Story.ID).Error; err != nil {
 		t.Fatalf("cerita tidak tersimpan: %v", err)
 	}
 	mustEqual(t, "mood tersimpan", saved.Mood, "Calm, Brave")
 	mustEqual(t, "deskripsi tersimpan", saved.Description, "A trip to the moon")
 	mustEqual(t, "durasi tersimpan", saved.LengthMinutes, 5)
 	mustEqual(t, "tema tersimpan", saved.Theme, "Adventure")
+	mustEqual(t, "audio tersimpan", saved.AudioURL, "http://audio.example/a.wav")
 
-	listed := decodeList(t, e.listStories(t, "uid-1", childQuery(child, "")))
-	mustEqual(t, "cerita baru langsung ada di playlist", len(listed.Stories), 1)
+	mustEqual(t, "cerita baru ada di playlist", len(decodeList(t, e.listStories(t, "uid-1", childQuery(child, ""))).Stories), 1)
 }
 
-func TestGenerateStory_OnlyBasicEnglishIsSupported(t *testing.T) {
+func TestStoryJob_ReportsTheRealStageWhileItWorks(t *testing.T) {
 	e := newTestEnv(t)
 	e.register(t, "uid-1", "a@example.com", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 
+	releaseStory, releaseVoice := make(chan struct{}), make(chan struct{})
+	releaseOnce(t, releaseStory, releaseVoice)
+	fakeAI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/generate_story" {
+			<-releaseStory
+			_, _ = w.Write([]byte(`{"status":"success","title":"T","response":"Once.","flags":[]}`))
+			return
+		}
+		<-releaseVoice
+		_, _ = w.Write([]byte(`{"status":"success","audio_url":"http://audio.example/a.wav"}`))
+	})
+
+	id, _ := e.startJob(t, "uid-1", jobPayload(child, nil))
+
+	e.waitForStatus(t, "uid-1", id, "writing_story")
+	job, _ := e.job(t, "uid-1", id)
+	if job.Story != nil {
+		t.Errorf("belum ada cerita saat masih menulis")
+	}
+	close(releaseStory)
+
+	job = e.waitForStatus(t, "uid-1", id, "creating_voice")
+	if job.Story == nil || job.Story.Title != "T" {
+		t.Errorf("saat membuat suara, ceritanya sudah tersimpan dan ikut dilaporkan: %+v", job)
+	}
+	close(releaseVoice)
+
+	mustEqual(t, "akhirnya", e.finishJob(t, "uid-1", id).Status, "done")
+}
+
+func TestStoryJob_ValidatesTheRequestBeforeDoingAnyWork(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-2", "b@example.com", "Bimo")
+	child, _ := e.child(t, "uid-1", "uid-1")
 	calls := 0
 	var received map[string]any
 	fakeAI(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &received)
-		_, _ = w.Write([]byte(`{"status":"success","title":"T","response":"Once."}`))
+		if r.URL.Path == "/generate_story" {
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &received)
+			_, _ = w.Write([]byte(`{"status":"success","title":"T","response":"Once.","flags":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"success","audio_url":"http://audio.example/a.wav"}`))
 	})
-	payload := func(language string) map[string]any {
-		return map[string]any{"child_id": child.ID, "character_name": "Aira", "theme": "Daily", "mood": "Calm", "length_minutes": 3, "language": language}
+
+	for _, language := range []string{"Mixed (EN + ID)", "Bahasa Indonesia", "basic english"} {
+		_, rec := e.startJob(t, "uid-1", jobPayload(child, map[string]any{"language": language}))
+		mustEqual(t, "bahasa ditolak: "+language, rec.Code, http.StatusBadRequest)
 	}
+	for _, voice := range []any{"", "Robot", nil} {
+		_, rec := e.startJob(t, "uid-1", jobPayload(child, map[string]any{"voice_tone": voice}))
+		mustEqual(t, "suara ditolak", rec.Code, http.StatusBadRequest)
+	}
+	_, rec := e.startJob(t, "uid-2", jobPayload(child, nil))
+	mustEqual(t, "anak milik orang lain", rec.Code, http.StatusNotFound)
 
-	t.Run("bahasa campuran ditolak dan AI tidak dipanggil", func(t *testing.T) {
-		for _, language := range []string{"Mixed (EN + ID)", "Bahasa Indonesia", "basic english"} {
-			mustEqual(t, "status untuk "+language, e.call(t, "uid-1", http.MethodPost, "/api/story/generate", payload(language)).Code, http.StatusBadRequest)
-		}
-		mustEqual(t, "AI tidak dipanggil", calls, 0)
-	})
+	var jobs int64
+	e.db.Model(&models.StoryJob{}).Count(&jobs)
+	mustEqual(t, "tidak ada job yang dibuat", jobs, int64(0))
+	mustEqual(t, "AI tidak dipanggil", calls, 0)
 
-	t.Run("Basic English diterima, dan bahasa kosong menjadi Basic English", func(t *testing.T) {
-		for _, language := range []string{"Basic English", "", "  Basic English  "} {
-			mustEqual(t, "status untuk '"+language+"'", e.call(t, "uid-1", http.MethodPost, "/api/story/generate", payload(language)).Code, http.StatusOK)
-			mustEqual(t, "yang dikirim ke AI", received["language"], any("Basic English"))
-		}
-		var saved models.Story
-		e.db.Order("id DESC").First(&saved)
-		mustEqual(t, "yang tersimpan", saved.Language, "Basic English")
-	})
+	for _, language := range []string{"Basic English", "", "  Basic English  "} {
+		id, rec := e.startJob(t, "uid-1", jobPayload(child, map[string]any{"language": language}))
+		mustEqual(t, "diterima: '"+language+"'", rec.Code, http.StatusAccepted)
+		e.finishJob(t, "uid-1", id)
+		mustEqual(t, "yang dikirim ke AI", received["language"], any("Basic English"))
+	}
 }
 
-func TestGenerateStory_NothingIsSavedWhenTheAIServiceFails(t *testing.T) {
+func TestStoryJob_FailuresSayWhatWentWrongAndSaveNothingWhenWritingFails(t *testing.T) {
 	e := newTestEnv(t)
 	e.register(t, "uid-1", "a@example.com", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
-	payload := map[string]any{"child_id": child.ID, "character_name": "Aira", "theme": "Daily", "mood": "Calm", "length_minutes": 3}
+	storyCount := func() int64 {
+		var count int64
+		e.db.Model(&models.Story{}).Count(&count)
+		return count
+	}
 
-	fakeAI(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "boom", http.StatusInternalServerError) })
-	mustEqual(t, "AI menjawab 500", e.call(t, "uid-1", http.MethodPost, "/api/story/generate", payload).Code, http.StatusInternalServerError)
+	cases := []struct {
+		name string
+		ai   func(t *testing.T)
+		code string
+	}{
+		{"layanan AI mati", func(t *testing.T) { t.Setenv("AI_SERVICE_URL", "http://127.0.0.1:1") }, "ai_unavailable"},
+		{"AI menjawab 502", func(t *testing.T) {
+			fakeAI(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "boom", http.StatusBadGateway) })
+		}, "ai_failed"},
+		{"AI menjawab bukan JSON", func(t *testing.T) {
+			fakeAI(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("not json")) })
+		}, "ai_failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.ai(t)
+			id, rec := e.startJob(t, "uid-1", jobPayload(child, nil))
+			mustEqual(t, "diterima", rec.Code, http.StatusAccepted)
+			job := e.finishJob(t, "uid-1", id)
+			mustEqual(t, "status", job.Status, "failed")
+			mustEqual(t, "kode", job.ErrorCode, tc.code)
+			mustEqual(t, "tidak ada cerita tersimpan", storyCount(), int64(0))
+		})
+	}
 
-	fakeAI(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("not json")) })
-	mustEqual(t, "AI menjawab bukan JSON", e.call(t, "uid-1", http.MethodPost, "/api/story/generate", payload).Code, http.StatusInternalServerError)
+	t.Run("suara gagal: ceritanya tetap tersimpan", func(t *testing.T) {
+		fakeAI(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/generate_story" {
+				_, _ = w.Write([]byte(`{"status":"success","title":"Kept","response":"Once.","flags":[]}`))
+				return
+			}
+			http.Error(w, "tts down", http.StatusInternalServerError)
+		})
+		id, _ := e.startJob(t, "uid-1", jobPayload(child, nil))
+		job := e.finishJob(t, "uid-1", id)
+		mustEqual(t, "status", job.Status, "failed")
+		mustEqual(t, "kode", job.ErrorCode, "voice_failed")
+		if job.Story == nil || job.Story.Title != "Kept" {
+			t.Fatalf("cerita yang sudah tertulis harus tetap dilaporkan: %+v", job)
+		}
+		mustEqual(t, "cerita ada", storyCount(), int64(1))
+		mustEqual(t, "tanpa audio", job.Story.AudioURL, "")
+	})
+}
 
-	var count int64
-	e.db.Model(&models.Story{}).Count(&count)
-	mustEqual(t, "tidak ada cerita tersimpan", count, int64(0))
+func TestStoryJob_TellsWhenTheIdeaWasNotUsed(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	child, _ := e.child(t, "uid-1", "uid-1")
+
+	flags := `["repaired:1"]`
+	fakeAI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/generate_story" {
+			_, _ = w.Write([]byte(`{"status":"success","title":"T","response":"Once.","flags":` + flags + `}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"success","audio_url":"http://audio.example/a.wav"}`))
+	})
+
+	id, _ := e.startJob(t, "uid-1", jobPayload(child, nil))
+	mustEqual(t, "ide dipakai", e.finishJob(t, "uid-1", id).IdeaDropped, false)
+
+	flags = `["idea_dropped","repaired:1"]`
+	id, _ = e.startJob(t, "uid-1", jobPayload(child, nil))
+	dropped := e.finishJob(t, "uid-1", id)
+	mustEqual(t, "ide dibuang", dropped.IdeaDropped, true)
+	mustEqual(t, "nama tetap dipakai", dropped.NameReplaced, false)
+
+	flags = `["name_replaced"]`
+	id, _ = e.startJob(t, "uid-1", jobPayload(child, nil))
+	replaced := e.finishJob(t, "uid-1", id)
+	mustEqual(t, "nama diganti", replaced.NameReplaced, true)
+	mustEqual(t, "ide tetap dipakai", replaced.IdeaDropped, false)
+}
+
+func TestStoryJob_OnlyOneActiveJobPerChild(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	child, _ := e.child(t, "uid-1", "uid-1")
+
+	release := make(chan struct{})
+	releaseOnce(t, release)
+	fakeAI(t, func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		if r.URL.Path == "/generate_story" {
+			_, _ = w.Write([]byte(`{"status":"success","title":"T","response":"Once.","flags":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"success","audio_url":"http://audio.example/a.wav"}`))
+	})
+
+	first, _ := e.startJob(t, "uid-1", jobPayload(child, nil))
+	_, rec := e.startJob(t, "uid-1", jobPayload(child, nil))
+	mustEqual(t, "job kedua ditolak", rec.Code, http.StatusConflict)
+	var conflict struct {
+		JobID uint `json:"job_id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &conflict)
+	mustEqual(t, "menunjuk job yang sedang berjalan", conflict.JobID, first)
+
+	close(release)
+	e.finishJob(t, "uid-1", first)
+
+	second, rec := e.startJob(t, "uid-1", jobPayload(child, nil))
+	mustEqual(t, "setelah selesai boleh lagi", rec.Code, http.StatusAccepted)
+	e.finishJob(t, "uid-1", second)
+}
+
+func TestStoryJob_OnlyTheOwnerCanSeeIt(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-2", "b@example.com", "Bimo")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	healthyAI(t, nil)
+
+	id, _ := e.startJob(t, "uid-1", jobPayload(child, nil))
+	e.finishJob(t, "uid-1", id)
+
+	_, code := e.job(t, "uid-2", id)
+	mustEqual(t, "pengguna lain", code, http.StatusNotFound)
+	_, code = e.job(t, "uid-1", 999999)
+	mustEqual(t, "tidak ada", code, http.StatusNotFound)
+	mustEqual(t, "id bukan angka", e.call(t, "uid-1", http.MethodGet, "/api/story/jobs/abc", nil).Code, http.StatusBadRequest)
+}
+
+func TestStoryJob_ARestartClosesJobsThatWereInFlight(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "a@example.com", "Aira")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	healthyAI(t, nil)
+
+	stuck := models.StoryJob{ChildID: child.ID, Status: models.JobWritingStory}
+	e.db.Create(&stuck)
+	_, rec := e.startJob(t, "uid-1", jobPayload(child, nil))
+	mustEqual(t, "job lama yang macet memblokir", rec.Code, http.StatusConflict)
+
+	handlers.FailInterruptedJobs(e.db)
+
+	job, _ := e.job(t, "uid-1", stuck.ID)
+	mustEqual(t, "status", job.Status, "failed")
+	mustEqual(t, "kode", job.ErrorCode, "interrupted")
+	id, rec := e.startJob(t, "uid-1", jobPayload(child, nil))
+	mustEqual(t, "sekarang bisa membuat lagi", rec.Code, http.StatusAccepted)
+	e.finishJob(t, "uid-1", id)
 }
 
 func TestGenerateAudio_RecordsTheVoiceAndRejectsUnknownVoices(t *testing.T) {
@@ -508,4 +778,16 @@ func TestGenerateAudio_RecordsTheVoiceAndRejectsUnknownVoices(t *testing.T) {
 	e.db.First(&saved, story.ID)
 	mustEqual(t, "suara tersimpan", saved.VoiceTone, "Warm")
 	mustEqual(t, "URL audio tersimpan", saved.AudioURL, "http://audio.example/a.wav")
+}
+
+func TestHealth_IsPublicSoTheAppCanTestAnAddressBeforeLoggingIn(t *testing.T) {
+	e := newTestEnv(t)
+
+	rec := e.call(t, "", http.MethodGet, "/api/health", nil)
+
+	mustEqual(t, "status", rec.Code, http.StatusOK)
+	var body map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	mustEqual(t, "service", body["service"], "talepuff")
+	mustEqual(t, "status", body["status"], "ok")
 }
