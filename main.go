@@ -19,7 +19,7 @@ import (
 func main() {
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file")
+		log.Fatal("Gagal memuat file .env (salin .env.example menjadi .env lalu isi nilainya): ", err)
 	}
 
 	dsn := os.Getenv("DB_URL")
@@ -30,13 +30,15 @@ func main() {
 	}
 
 	fmt.Println("Running Database Migration...")
-	db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&models.User{},
 		&models.Child{},
 		&models.Story{},
 		&models.StoryJob{},
 		&models.Feedback{},
-	)
+	); err != nil {
+		log.Fatal("Migrasi database gagal: ", err)
+	}
 
 	handlers.FailInterruptedJobs(db)
 

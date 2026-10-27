@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +15,6 @@ import (
 	"strings"
 	"talepuff_backend/auth"
 	"talepuff_backend/models"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -66,7 +67,12 @@ func UploadChildPhotoHandler(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		name := fmt.Sprintf("child-%d-%d%s", child.ID, time.Now().UnixNano(), extension)
+		token, err := randomFileToken()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save the photo"})
+			return
+		}
+		name := fmt.Sprintf("child-%d-%s%s", child.ID, token, extension)
 		savePath := filepath.Join(profileDir, name)
 		if err := c.SaveUploadedFile(file, savePath); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save the photo"})
@@ -105,6 +111,16 @@ func DeleteChildPhoto(db *gorm.DB) gin.HandlerFunc {
 		removeProfileFile(child.ProfilePhotoURL)
 		c.JSON(http.StatusOK, gin.H{"message": "Photo removed"})
 	}
+}
+
+// randomFileToken mengembalikan 128 bit acak kriptografis dalam heksadesimal. Foto profil dilayani
+// publik di /uploads, sehingga nama berkas harus tidak bisa ditebak (ID anak + cap waktu bisa).
+func randomFileToken() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func imageExtension(file *multipart.FileHeader) (string, error) {

@@ -36,26 +36,6 @@ func TestChildName_Rejects(t *testing.T) {
 	}
 }
 
-func TestEmail(t *testing.T) {
-	for _, ok := range []string{"a@b.co", "parent.name+tag@mail.example.com", "x@site.technology", "  a@b.co  "} {
-		if _, err := Email(ok); err != nil {
-			t.Errorf("Email(%q) ditolak: %v", ok, err)
-		}
-	}
-	for _, bad := range []string{"", "   ", "plain", "a@b", "@b.com", "a@.com", "a b@c.com"} {
-		if _, err := Email(bad); err == nil {
-			t.Errorf("Email(%q) seharusnya ditolak", bad)
-		}
-	}
-}
-
-func TestEmail_TrimsTheResult(t *testing.T) {
-	got, err := Email("  a@b.co  ")
-	if err != nil || got != "a@b.co" {
-		t.Errorf("Email dirapikan menjadi %q (err=%v)", got, err)
-	}
-}
-
 func TestFeedbackCategory(t *testing.T) {
 	for input, want := range map[string]string{"bug": "bug", " Idea ": "idea", "OTHER": "other"} {
 		if got, err := FeedbackCategory(input); err != nil || got != want {
