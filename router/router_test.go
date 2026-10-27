@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -107,11 +108,10 @@ func (e *env) call(t *testing.T, uid, method, path string, body any) *httptest.R
 	return e.raw(t, uid, method, path, bytes.NewReader(raw), "application/json")
 }
 
-func (e *env) register(t *testing.T, uid, email, childName string) *httptest.ResponseRecorder {
+func (e *env) register(t *testing.T, uid, childName string) *httptest.ResponseRecorder {
 	t.Helper()
 	return e.call(t, uid, http.MethodPost, "/api/register", map[string]any{
 		"firebase_uid": uid,
-		"email":        email,
 		"child_name":   childName,
 		"age":          3,
 		"gender":       "Girl",
@@ -153,7 +153,6 @@ func TestAuth_EveryApiRouteRequiresAValidToken(t *testing.T) {
 		{http.MethodPut, "/api/child/update-name/1"},
 		{http.MethodDelete, "/api/child/1/photo"},
 		{http.MethodPut, "/api/child/1/mascot"},
-		{http.MethodPut, "/api/user/update-email/uid-1"},
 		{http.MethodPost, "/api/story/generate"},
 		{http.MethodPost, "/api/audio/generate_audio"},
 		{http.MethodPost, "/api/feedback"},
@@ -182,7 +181,7 @@ func TestAuth_ProfilePhotosRemainPublicForNow(t *testing.T) {
 func TestRegister_CreatesUserAndChild(t *testing.T) {
 	e := newTestEnv(t)
 
-	mustEqual(t, "status register", e.register(t, "uid-1", "a@example.com", "Aira").Code, http.StatusOK)
+	mustEqual(t, "status register", e.register(t, "uid-1", "Aira").Code, http.StatusOK)
 
 	child, status := e.child(t, "uid-1", "uid-1")
 	mustEqual(t, "status get child", status, http.StatusOK)
@@ -217,7 +216,7 @@ func TestRegister_RejectsABodyUidThatIsNotTheCallers(t *testing.T) {
 
 func TestRegister_DoesNotOverwriteAnExistingChild(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 
 	second := e.call(t, "uid-1", http.MethodPost, "/api/register", map[string]any{
 		"firebase_uid": "uid-1", "email": "a@example.com", "child_name": "Hacker", "age": 9,
@@ -233,23 +232,18 @@ func TestRegister_RejectsAnInvalidChildName(t *testing.T) {
 	e := newTestEnv(t)
 
 	for _, name := range []string{"Aira 2", "Aira!", "2Aira", strings.Repeat("A", 31)} {
-		mustEqual(t, "status untuk "+name, e.register(t, "uid-1", "a@example.com", name).Code, http.StatusBadRequest)
+		mustEqual(t, "status untuk "+name, e.register(t, "uid-1", name).Code, http.StatusBadRequest)
 	}
 	_, status := e.child(t, "uid-1", "uid-1")
 	mustEqual(t, "tidak ada profil yang tersimpan", status, http.StatusNotFound)
-}
-
-func TestRegister_RequiresAnEmail(t *testing.T) {
-	e := newTestEnv(t)
-	mustEqual(t, "tanpa email", e.register(t, "uid-1", "", "Aira").Code, http.StatusBadRequest)
 }
 
 // ---------- membaca profil ----------
 
 func TestGetChild_OnlyTheOwnerCanReadIt(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 
 	_, own := e.child(t, "uid-1", "uid-1")
 	mustEqual(t, "pemilik", own, http.StatusOK)
@@ -268,7 +262,7 @@ func TestGetChild_NoProfileYetIs404(t *testing.T) {
 
 func TestUpdateChildName(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	path := "/api/child/update-name/" + itoa(child.ID)
 
@@ -297,8 +291,8 @@ func TestUpdateChildName(t *testing.T) {
 
 func TestUpdateChildName_CannotRenameSomeoneElsesChild(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 	victim, _ := e.child(t, "uid-1", "uid-1")
 
 	rec := e.call(t, "uid-2", http.MethodPut, "/api/child/update-name/"+itoa(victim.ID), map[string]string{"name": "Hacked"})
@@ -312,8 +306,8 @@ func TestUpdateChildName_CannotRenameSomeoneElsesChild(t *testing.T) {
 
 func TestMascot(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	path := "/api/child/" + itoa(child.ID) + "/mascot"
 
@@ -350,30 +344,38 @@ func TestMascot(t *testing.T) {
 	})
 }
 
-// ---------- update email ----------
+// ---------- email tidak lagi disimpan di backend ----------
+//
+// Dulu email disimpan di tabel users tetapi tidak pernah dibaca siapa pun, dan menjadi usang
+// begitu pengguna mengganti email di Firebase (akibatnya email lamanya tetap "terpakai" dan
+// pendaftar baru dengan email itu ditolak 409). Sumber kebenaran email sekarang hanya Firebase.
 
-func TestUpdateUserEmail(t *testing.T) {
+func TestRegister_DoesNotNeedAnEmail(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
 
-	t.Run("email valid disimpan", func(t *testing.T) {
-		mustEqual(t, "status", e.call(t, "uid-1", http.MethodPut, "/api/user/update-email/uid-1", map[string]string{"email": "new@example.com"}).Code, http.StatusOK)
+	rec := e.call(t, "uid-1", http.MethodPost, "/api/register", map[string]any{"child_name": "Aira", "age": 3})
+
+	mustEqual(t, "tanpa email", rec.Code, http.StatusOK)
+}
+
+// APK yang sudah terpasang masih mengirim email; itu tidak boleh membuat pendaftaran gagal.
+func TestRegister_ToleratesALegacyClientThatStillSendsAnEmail(t *testing.T) {
+	e := newTestEnv(t)
+
+	rec := e.call(t, "uid-1", http.MethodPost, "/api/register", map[string]any{
+		"email": "a@example.com", "child_name": "Aira", "age": 3,
 	})
 
-	t.Run("email tidak valid ditolak", func(t *testing.T) {
-		for _, email := range []string{"", "plain", "a@b", "@b.com", "a b@c.com"} {
-			mustEqual(t, "status untuk "+email, e.call(t, "uid-1", http.MethodPut, "/api/user/update-email/uid-1", map[string]string{"email": email}).Code, http.StatusBadRequest)
-		}
-	})
+	mustEqual(t, "klien lama", rec.Code, http.StatusOK)
+}
 
-	t.Run("email yang sudah dipakai akun lain dijawab 409", func(t *testing.T) {
-		mustEqual(t, "status", e.call(t, "uid-1", http.MethodPut, "/api/user/update-email/uid-1", map[string]string{"email": "b@example.com"}).Code, http.StatusConflict)
-	})
+func TestUpdateUserEmailEndpointIsGone(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "Aira")
 
-	t.Run("pengguna lain tidak boleh mengubah email orang lain", func(t *testing.T) {
-		mustEqual(t, "status", e.call(t, "uid-2", http.MethodPut, "/api/user/update-email/uid-1", map[string]string{"email": "evil@example.com"}).Code, http.StatusForbidden)
-	})
+	rec := e.call(t, "uid-1", http.MethodPut, "/api/user/update-email/uid-1", map[string]string{"email": "new@example.com"})
+
+	mustEqual(t, "status", rec.Code, http.StatusNotFound)
 }
 
 // ---------- foto profil ----------
@@ -434,8 +436,8 @@ func (e *env) upload(t *testing.T, uid string, childID uint, filename string, co
 
 func TestUploadPhoto(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 	victim, _ := e.child(t, "uid-1", "uid-1")
 	chdirTemp(t)
 
@@ -462,7 +464,7 @@ func TestUploadPhoto(t *testing.T) {
 
 func TestUploadPhoto_OnlyRealImagesAreAccepted(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	chdirTemp(t)
 
@@ -487,7 +489,7 @@ func TestUploadPhoto_OnlyRealImagesAreAccepted(t *testing.T) {
 
 func TestUploadPhoto_RejectsAnOversizedFile(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	chdirTemp(t)
 
@@ -499,7 +501,7 @@ func TestUploadPhoto_RejectsAnOversizedFile(t *testing.T) {
 
 func TestUploadPhoto_ClientFilenameIsNeverUsed(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	chdirTemp(t)
 
@@ -515,9 +517,34 @@ func TestUploadPhoto_ClientFilenameIsNeverUsed(t *testing.T) {
 	}
 }
 
+// Foto profil dilayani publik di /uploads, jadi nama berkasnya adalah satu-satunya "rahasia":
+// harus acak (128-bit), bukan ID anak + cap waktu yang bisa ditebak.
+var photoNamePattern = regexp.MustCompile(`^child-\d+-[0-9a-f]{32}\.jpg$`)
+
+func TestUploadPhoto_FilenameIsRandomNotPredictable(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "Aira")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	chdirTemp(t)
+
+	seen := map[string]bool{}
+	for i := 0; i < 5; i++ {
+		mustEqual(t, "status", e.upload(t, "uid-1", child.ID, "me.jpg", withJPEG(100)).Code, http.StatusOK)
+		files := uploadedFiles(t)
+		mustEqual(t, "hanya satu berkas tersisa", len(files), 1)
+		if !photoNamePattern.MatchString(files[0]) {
+			t.Fatalf("nama berkas %q tidak berbentuk child-<id>-<32 hex>.jpg", files[0])
+		}
+		if seen[files[0]] {
+			t.Fatalf("nama berkas %q muncul dua kali", files[0])
+		}
+		seen[files[0]] = true
+	}
+}
+
 func TestUploadPhoto_ReplacingThePhotoDeletesTheOldFile(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	chdirTemp(t)
 
@@ -536,8 +563,8 @@ func TestUploadPhoto_ReplacingThePhotoDeletesTheOldFile(t *testing.T) {
 
 func TestDeletePhoto(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	chdirTemp(t)
 	e.upload(t, "uid-1", child.ID, "me.jpg", withJPEG(100))
@@ -573,8 +600,8 @@ func TestDeletePhoto(t *testing.T) {
 
 func TestGenerateStory_CannotUseSomeoneElsesChild(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 	victim, _ := e.child(t, "uid-1", "uid-1")
 
 	rec := e.call(t, "uid-2", http.MethodPost, "/api/story/generate", map[string]any{
@@ -589,8 +616,8 @@ func TestGenerateStory_CannotUseSomeoneElsesChild(t *testing.T) {
 
 func TestGenerateAudio_CannotUseSomeoneElsesStory(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 	victim, _ := e.child(t, "uid-1", "uid-1")
 
 	story := models.Story{ChildID: victim.ID, Title: "T", Content: "C"}
@@ -613,7 +640,7 @@ func feedback(category, message string) map[string]string {
 
 func TestFeedback_IsStoredForTheAuthenticatedUser(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 
 	rec := e.call(t, "uid-1", http.MethodPost, "/api/feedback", feedback("Bug", "  The audio stops after a minute.  "))
 	mustEqual(t, "status", rec.Code, http.StatusCreated)
@@ -633,7 +660,7 @@ func TestFeedback_IsStoredForTheAuthenticatedUser(t *testing.T) {
 
 func TestFeedback_RejectsInvalidInput(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 
 	bad := []map[string]string{
 		feedback("complaint", "A valid message here"),
@@ -655,7 +682,7 @@ func TestFeedback_RejectsInvalidInput(t *testing.T) {
 
 func TestFeedback_ADodgyAppVersionIsDroppedNotRejected(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 
 	body := map[string]string{"category": "idea", "message": "Please add more stories", "app_version": "<script>alert(1)</script>"}
 	mustEqual(t, "status", e.call(t, "uid-1", http.MethodPost, "/api/feedback", body).Code, http.StatusCreated)
@@ -667,8 +694,8 @@ func TestFeedback_ADodgyAppVersionIsDroppedNotRejected(t *testing.T) {
 
 func TestFeedback_IsRateLimitedPerUser(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 
 	for i := 0; i < 5; i++ {
 		mustEqual(t, "pengiriman ke-"+itoa(uint(i+1)), e.call(t, "uid-1", http.MethodPost, "/api/feedback", feedback("idea", "Another good idea")).Code, http.StatusCreated)

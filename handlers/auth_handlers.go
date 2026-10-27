@@ -34,17 +34,9 @@ func RegisterUser(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		email, err := validation.Email(req.Email)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
 
 		err = db.Transaction(func(tx *gorm.DB) error {
-			user := models.User{
-				FirebaseUID: uid,
-				Email:       email,
-			}
+			user := models.User{FirebaseUID: uid}
 			if err := tx.Where(models.User{FirebaseUID: uid}).FirstOrCreate(&user).Error; err != nil {
 				return err
 			}
@@ -71,44 +63,12 @@ func RegisterUser(db *gorm.DB) gin.HandlerFunc {
 		case errors.Is(err, errProfileExists):
 			c.JSON(http.StatusConflict, gin.H{"error": "Profile already exists for this account"})
 		case errors.Is(err, gorm.ErrDuplicatedKey):
-			c.JSON(http.StatusConflict, gin.H{"error": "Email is already registered"})
+			// Dua pendaftaran serentak untuk uid yang sama: yang kalah menabrak indeks unik firebase_uid.
+			c.JSON(http.StatusConflict, gin.H{"error": "Profile already exists for this account"})
 		case err != nil:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save data"})
 		default:
 			c.JSON(http.StatusOK, gin.H{"message": "User and Child data saved successfully!"})
-		}
-	}
-}
-
-func UpdateUserEmail(db *gorm.DB) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		uid := c.Param("uid")
-		if uid != auth.IdentityFrom(c).UID {
-			c.JSON(http.StatusForbidden, gin.H{"error": "You can only change your own email"})
-			return
-		}
-
-		var input dto.UpdateEmailRequest
-		if err := c.ShouldBindJSON(&input); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Input"})
-			return
-		}
-		email, err := validation.Email(input.Email)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		result := db.Model(&models.User{}).Where("firebase_uid = ?", uid).Update("email", email)
-		switch {
-		case errors.Is(result.Error, gorm.ErrDuplicatedKey):
-			c.JSON(http.StatusConflict, gin.H{"error": "Email is already used by another account"})
-		case result.Error != nil:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to Update Database"})
-		case result.RowsAffected == 0:
-			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		default:
-			c.JSON(http.StatusOK, gin.H{"message": "Email update successfully"})
 		}
 	}
 }

@@ -105,7 +105,7 @@ func TestStories_EveryRouteRequiresAToken(t *testing.T) {
 
 func TestListStories_RecentIsNewestFirstAndOmitsTheStoryText(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	e.seedStory(t, child.ID, "Oldest", 3*time.Hour, nil)
 	e.seedStory(t, child.ID, "Newest", 1*time.Minute, nil)
@@ -127,7 +127,7 @@ func TestListStories_RecentIsNewestFirstAndOmitsTheStoryText(t *testing.T) {
 
 func TestListStories_EmptyIsAnEmptyArrayNotNull(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 
 	rec := e.listStories(t, "uid-1", childQuery(child, ""))
@@ -140,7 +140,7 @@ func TestListStories_EmptyIsAnEmptyArrayNotNull(t *testing.T) {
 
 func TestListStories_Tabs(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	e.seedStory(t, child.ID, "Plain", 4*time.Hour, nil)
 	e.seedStory(t, child.ID, "Loved old", 3*time.Hour, func(s *models.Story) { s.IsFavorite = true })
@@ -160,7 +160,7 @@ func TestListStories_Tabs(t *testing.T) {
 
 func TestListStories_Search(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	for i, title := range []string{"Aira's Space Adventure", "The Sleeping Cloud", "100% Fun", "snake_case story", "Plain story"} {
 		e.seedStory(t, child.ID, title, time.Duration(i+1)*time.Hour, nil)
@@ -199,7 +199,7 @@ func TestListStories_Search(t *testing.T) {
 
 func TestListStories_Pagination(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	for i := 1; i <= 5; i++ {
 		e.seedStory(t, child.ID, "Story "+itoa(uint(i)), time.Duration(i)*time.Hour, nil)
@@ -221,8 +221,8 @@ func TestListStories_Pagination(t *testing.T) {
 
 func TestListStories_OnlyTheOwnersChild(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 	aira, _ := e.child(t, "uid-1", "uid-1")
 	bimo, _ := e.child(t, "uid-2", "uid-2")
 	e.seedStory(t, aira.ID, "Aira private", time.Hour, nil)
@@ -238,7 +238,7 @@ func TestListStories_OnlyTheOwnersChild(t *testing.T) {
 
 func TestListStories_RejectsBadParameters(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 
 	for _, query := range []string{
@@ -257,8 +257,8 @@ func TestListStories_RejectsBadParameters(t *testing.T) {
 
 func TestGetStory(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	story := e.seedStory(t, child.ID, "My story", time.Hour, nil)
 	path := "/api/stories/" + itoa(story.ID)
@@ -287,8 +287,8 @@ func TestGetStory(t *testing.T) {
 
 func TestSetStoryFavorite(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	story := e.seedStory(t, child.ID, "My story", time.Hour, nil)
 	path := "/api/stories/" + itoa(story.ID) + "/favorite"
@@ -319,8 +319,8 @@ func TestSetStoryFavorite(t *testing.T) {
 
 func TestDeleteStory(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 	child, _ := e.child(t, "uid-1", "uid-1")
 
 	var removed []string
@@ -484,7 +484,7 @@ func healthyAI(t *testing.T, received *map[string]any) {
 
 func TestStoryJob_WritesTheStoryThenTheVoiceAndSavesEverythingTheListNeeds(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	var received map[string]any
 	healthyAI(t, &received)
@@ -523,7 +523,7 @@ func TestStoryJob_WritesTheStoryThenTheVoiceAndSavesEverythingTheListNeeds(t *te
 
 func TestStoryJob_ReportsTheRealStageWhileItWorks(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 
 	releaseStory, releaseVoice := make(chan struct{}), make(chan struct{})
@@ -558,8 +558,8 @@ func TestStoryJob_ReportsTheRealStageWhileItWorks(t *testing.T) {
 
 func TestStoryJob_ValidatesTheRequestBeforeDoingAnyWork(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	calls := 0
 	var received map[string]any
@@ -600,7 +600,7 @@ func TestStoryJob_ValidatesTheRequestBeforeDoingAnyWork(t *testing.T) {
 
 func TestStoryJob_FailuresSayWhatWentWrongAndSaveNothingWhenWritingFails(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	storyCount := func() int64 {
 		var count int64
@@ -655,7 +655,7 @@ func TestStoryJob_FailuresSayWhatWentWrongAndSaveNothingWhenWritingFails(t *test
 
 func TestStoryJob_TellsWhenTheIdeaWasNotUsed(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 
 	flags := `["repaired:1"]`
@@ -685,7 +685,7 @@ func TestStoryJob_TellsWhenTheIdeaWasNotUsed(t *testing.T) {
 
 func TestStoryJob_OnlyOneActiveJobPerChild(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 
 	release := make(chan struct{})
@@ -718,8 +718,8 @@ func TestStoryJob_OnlyOneActiveJobPerChild(t *testing.T) {
 
 func TestStoryJob_OnlyTheOwnerCanSeeIt(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
-	e.register(t, "uid-2", "b@example.com", "Bimo")
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	healthyAI(t, nil)
 
@@ -735,7 +735,7 @@ func TestStoryJob_OnlyTheOwnerCanSeeIt(t *testing.T) {
 
 func TestStoryJob_ARestartClosesJobsThatWereInFlight(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	healthyAI(t, nil)
 
@@ -756,7 +756,7 @@ func TestStoryJob_ARestartClosesJobsThatWereInFlight(t *testing.T) {
 
 func TestGenerateAudio_RecordsTheVoiceAndRejectsUnknownVoices(t *testing.T) {
 	e := newTestEnv(t)
-	e.register(t, "uid-1", "a@example.com", "Aira")
+	e.register(t, "uid-1", "Aira")
 	child, _ := e.child(t, "uid-1", "uid-1")
 	story := e.seedStory(t, child.ID, "My story", time.Hour, nil)
 

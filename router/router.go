@@ -21,7 +21,6 @@ func New(db *gorm.DB, verifier auth.Verifier) *gin.Engine {
 		api.DELETE("/child/:id/photo", handlers.DeleteChildPhoto(db))
 		api.PUT("/child/:id/mascot", handlers.UpdateChildMascot(db))
 		api.PUT("/child/update-name/:id", handlers.UpdateChildName(db))
-		api.PUT("/user/update-email/:uid", handlers.UpdateUserEmail(db))
 		api.POST("/story/generate", handlers.StartStoryJob(db))
 		api.GET("/story/jobs/:id", handlers.GetStoryJob(db))
 		api.GET("/stories", handlers.ListStories(db))
