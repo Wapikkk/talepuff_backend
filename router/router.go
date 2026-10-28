@@ -39,6 +39,9 @@ func New(db *gorm.DB, verifier auth.Verifier, hub totem.Hub) *gin.Engine {
 		api.DELETE("/totem", handlers.UnpairTotem(db, hub))
 		api.POST("/totem/play", handlers.PlayOnTotem(db, hub))
 		api.POST("/totem/command", handlers.CommandTotem(db, hub))
+		api.PUT("/totem/volume-limit", handlers.SetTotemVolumeLimit(db, hub))
+		api.PUT("/totem/bedtime", handlers.SetTotemBedtime(db))
+		api.GET("/stats/weekly", handlers.WeeklyStats(db))
 	}
 	return r
 }

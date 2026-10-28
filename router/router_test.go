@@ -72,10 +72,10 @@ func newTestEnvWithHub(t *testing.T, hub totem.Hub) *env {
 		t.Fatalf("menolak menjalankan tes di database %q: namanya harus berakhiran _test", name)
 	}
 
-	if err := db.AutoMigrate(&models.User{}, &models.Child{}, &models.Story{}, &models.StoryJob{}, &models.Feedback{}, &models.Device{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Child{}, &models.Story{}, &models.StoryJob{}, &models.Feedback{}, &models.Device{}, &models.StoryPlay{}); err != nil {
 		t.Fatalf("migrasi gagal: %v", err)
 	}
-	if err := db.Exec("TRUNCATE TABLE devices, feedbacks, story_jobs, stories, children, users RESTART IDENTITY CASCADE").Error; err != nil {
+	if err := db.Exec("TRUNCATE TABLE story_plays, devices, feedbacks, story_jobs, stories, children, users RESTART IDENTITY CASCADE").Error; err != nil {
 		t.Fatalf("gagal mengosongkan tabel tes: %v", err)
 	}
 

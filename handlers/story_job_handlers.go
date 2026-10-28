@@ -161,7 +161,8 @@ func runStoryJob(db *gorm.DB, jobID uint, req dto.GenerateStoryRequest) {
 		failJob(db, jobID, ErrVoiceFailed)
 		return
 	}
-	if err := db.Model(&models.Story{}).Where("id = ?", story.ID).Update("audio_url", audio.AudioURL).Error; err != nil {
+	if err := db.Model(&models.Story{}).Where("id = ?", story.ID).
+		Updates(map[string]any{"audio_url": audio.AudioURL, "sentences": encodeSentences(audio.Sentences)}).Error; err != nil {
 		log.Printf("story job %d: saving the voice failed: %v", jobID, err)
 		failJob(db, jobID, ErrSaveFailed)
 		return

@@ -14,19 +14,24 @@ import (
 )
 
 type storyJSON struct {
-	ID            uint      `json:"id"`
-	ChildID       uint      `json:"child_id"`
-	Title         string    `json:"title"`
-	Theme         string    `json:"theme"`
-	Mood          string    `json:"mood"`
-	LengthMinutes int       `json:"length_minutes"`
-	Content       string    `json:"content"`
-	Description   string    `json:"description"`
-	AudioURL      string    `json:"audio_url"`
-	VoiceTone     string    `json:"voice_tone"`
-	IsFavorite    bool      `json:"is_favorite"`
-	PlayCount     int       `json:"play_count"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID            uint   `json:"id"`
+	ChildID       uint   `json:"child_id"`
+	Title         string `json:"title"`
+	Theme         string `json:"theme"`
+	Mood          string `json:"mood"`
+	LengthMinutes int    `json:"length_minutes"`
+	Content       string `json:"content"`
+	Description   string `json:"description"`
+	AudioURL      string `json:"audio_url"`
+	Sentences     []struct {
+		Start int    `json:"start"`
+		End   int    `json:"end"`
+		Text  string `json:"text"`
+	} `json:"sentences"`
+	VoiceTone  string    `json:"voice_tone"`
+	IsFavorite bool      `json:"is_favorite"`
+	PlayCount  int       `json:"play_count"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type storyList struct {
@@ -475,7 +480,7 @@ func healthyAI(t *testing.T, received *map[string]any) {
 			}
 			_, _ = w.Write([]byte(`{"status":"success","title":"Moon Rocket","response":"Aira flies to the moon.","flags":[]}`))
 		case "/generate_audio":
-			_, _ = w.Write([]byte(`{"status":"success","audio_url":"http://audio.example/a.wav"}`))
+			_, _ = w.Write([]byte(`{"status":"success","audio_url":"http://audio.example/a.wav","sentences":[{"start":0,"end":1500,"text":"Aira flies"},{"start":1450,"end":2600,"text":"to the moon."}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -517,6 +522,17 @@ func TestStoryJob_WritesTheStoryThenTheVoiceAndSavesEverythingTheListNeeds(t *te
 	mustEqual(t, "durasi tersimpan", saved.LengthMinutes, 5)
 	mustEqual(t, "tema tersimpan", saved.Theme, "Adventure")
 	mustEqual(t, "audio tersimpan", saved.AudioURL, "http://audio.example/a.wav")
+
+	mustEqual(t, "kalimat ikut di jawaban job", len(job.Story.Sentences), 2)
+	mustEqual(t, "teks kalimat", job.Story.Sentences[1].Text, "to the moon.")
+	mustEqual(t, "waktu mulai", job.Story.Sentences[1].Start, 1450)
+	detail := e.call(t, "uid-1", http.MethodGet, "/api/stories/"+itoa(job.Story.ID), nil)
+	var detailBody struct {
+		Data storyJSON `json:"data"`
+	}
+	_ = json.Unmarshal(detail.Body.Bytes(), &detailBody)
+	mustEqual(t, "kalimat ikut di detail", len(detailBody.Data.Sentences), 2)
+	mustEqual(t, "daftar tidak membawa kalimat", len(decodeList(t, e.listStories(t, "uid-1", childQuery(child, ""))).Stories[0].Sentences), 0)
 
 	mustEqual(t, "cerita baru ada di playlist", len(decodeList(t, e.listStories(t, "uid-1", childQuery(child, ""))).Stories), 1)
 }
@@ -790,4 +806,54 @@ func TestHealth_IsPublicSoTheAppCanTestAnAddressBeforeLoggingIn(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
 	mustEqual(t, "service", body["service"], "talepuff")
 	mustEqual(t, "status", body["status"], "ok")
+}
+
+func TestStoryJob_CleansUpSentenceTimingsFromTheAIService(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "Aira")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	fakeAI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/generate_story":
+			_, _ = w.Write([]byte(`{"status":"success","title":"T","response":"Hello there.","flags":[]}`))
+		case "/generate_audio":
+			_, _ = w.Write([]byte(`{"status":"success","audio_url":"http://audio.example/a.wav","sentences":[
+				{"start":-50,"end":-10,"text":"  Hello  "},
+				{"start":900,"end":100,"text":"there."},
+				{"start":2000,"end":3000,"text":"   "}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	id, _ := e.startJob(t, "uid-1", jobPayload(child, nil))
+	job := e.finishJob(t, "uid-1", id)
+
+	mustEqual(t, "kalimat kosong dibuang", len(job.Story.Sentences), 2)
+	mustEqual(t, "teks dirapikan", job.Story.Sentences[0].Text, "Hello")
+	mustEqual(t, "mulai tidak negatif", job.Story.Sentences[0].Start, 0)
+	mustEqual(t, "selesai tidak sebelum mulai", job.Story.Sentences[0].End, 0)
+	mustEqual(t, "akhir tidak mundur dari awal", job.Story.Sentences[1].End, 900)
+}
+
+func TestStoryJob_AStoryWithoutTimingsStillWorks(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "Aira")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	fakeAI(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/generate_story":
+			_, _ = w.Write([]byte(`{"status":"success","title":"T","response":"Hello there.","flags":[]}`))
+		case "/generate_audio":
+			_, _ = w.Write([]byte(`{"status":"success","audio_url":"http://audio.example/a.wav"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	id, _ := e.startJob(t, "uid-1", jobPayload(child, nil))
+	job := e.finishJob(t, "uid-1", id)
+
+	mustEqual(t, "selesai", job.Status, "done")
+	mustEqual(t, "tanpa kalimat", len(job.Story.Sentences), 0)
 }

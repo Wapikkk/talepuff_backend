@@ -16,6 +16,7 @@ type Story struct {
 	Title         string `json:"title"`
 	Content       string `json:"content"`
 	AudioURL      string `json:"audio_url"`
+	Sentences     string `json:"-" gorm:"type:text"` // JSON: penanda waktu kalimat dari layanan suara
 	VoiceTone     string `json:"voice_tone"`
 	IsFavorite    bool   `json:"is_favorite" gorm:"not null;default:false"`
 	PlayCount     int    `json:"play_count" gorm:"not null;default:0"`

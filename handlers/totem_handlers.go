@@ -70,7 +70,13 @@ func GetTotem(db *gorm.DB, hub totem.Hub) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"paired": true, "device_id": device.DeviceID, "status": hub.Status(device.DeviceID)})
+		c.JSON(http.StatusOK, gin.H{
+			"paired":       true,
+			"device_id":    device.DeviceID,
+			"volume_limit": device.VolumeLimit,
+			"bedtime":      bedtimeJSON(device),
+			"status":       hub.Status(device.DeviceID),
+		})
 	}
 }
 
@@ -153,6 +159,19 @@ func UnpairTotem(db *gorm.DB, hub totem.Hub) gin.HandlerFunc {
 
 func validVolume(v *int) bool { return v == nil || (*v >= 0 && *v <= 100) }
 
+// playVolume memilih volume untuk perintah play dan memotongnya ke batas orang tua. Tanpa permintaan
+// eksplisit dipakai volume totem saat ini (bila diketahui), supaya batas yang lebih rendah tetap berlaku.
+func playVolume(requested *int, current, limit int) int {
+	volume := limit
+	switch {
+	case requested != nil:
+		volume = *requested
+	case current > 0:
+		volume = current
+	}
+	return min(volume, limit)
+}
+
 // deviceForCommand mengembalikan totem milik pengguna yang siap menerima perintah, atau menjawab galatnya.
 func deviceForCommand(c *gin.Context, db *gorm.DB, hub totem.Hub) (models.Device, bool) {
 	if !totemEnabled(hub) {
@@ -209,11 +228,13 @@ func PlayOnTotem(db *gorm.DB, hub totem.Hub) gin.HandlerFunc {
 		}
 
 		storyID := story.ID
-		if err := hub.Send(device.DeviceID, totem.Command{Action: "play", URL: audioURL, StoryID: &storyID, Volume: req.Volume}); err != nil {
+		volume := playVolume(req.Volume, hub.Status(device.DeviceID).Volume, device.VolumeLimit)
+		if err := hub.Send(device.DeviceID, totem.Command{Action: "play", URL: audioURL, StoryID: &storyID, Volume: &volume}); err != nil {
 			sendFailed(c, err)
 			return
 		}
 		db.Model(&models.Story{}).Where("id = ?", story.ID).UpdateColumn("play_count", gorm.Expr("play_count + 1"))
+		recordPlay(db, story, device.DeviceID)
 		c.JSON(http.StatusOK, gin.H{"message": "Sent to the totem"})
 	}
 }
@@ -245,10 +266,40 @@ func CommandTotem(db *gorm.DB, hub totem.Hub) gin.HandlerFunc {
 		if !ok {
 			return
 		}
+		if req.Action == "volume" {
+			capped := min(*req.Value, device.VolumeLimit)
+			req.Value = &capped
+		}
 		if err := hub.Send(device.DeviceID, totem.Command{Action: req.Action, Value: req.Value}); err != nil {
 			sendFailed(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "Sent to the totem"})
+	}
+}
+
+func SetTotemVolumeLimit(db *gorm.DB, hub totem.Hub) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			Limit *int `json:"limit"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil || req.Limit == nil || !validVolume(req.Limit) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "The limit must be between 0 and 100"})
+			return
+		}
+		device, err := ownedDevice(db, auth.IdentityFrom(c).UID)
+		if err != nil {
+			totemNotPaired(c, err)
+			return
+		}
+		if err := db.Model(&device).Update("volume_limit", *req.Limit).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save the volume limit"})
+			return
+		}
+		// Bila totem sedang bersuara lebih keras dari batas baru, turunkan sekarang.
+		if status := hub.Status(device.DeviceID); status.Online && status.Volume > *req.Limit {
+			_ = hub.Send(device.DeviceID, totem.Command{Action: "volume", Value: req.Limit})
+		}
+		c.JSON(http.StatusOK, gin.H{"volume_limit": *req.Limit})
 	}
 }
