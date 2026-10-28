@@ -121,6 +121,18 @@ cd ai_services;      .\venv\Scripts\python -m pytest            # folder tests/ 
 cd talepuff_app;     flutter analyze; flutter test
 ```
 
+## 6b. Totem (Mosquitto + Pico)
+
+Backend yang mengirim perintah ke totem; aplikasi cukup memanggil API.
+
+1. Mosquitto lokal: lihat `mosquitto/` dan `totem_firmware/README.md` (pengguna `backend` dibuat dengan `mosquitto_passwd`).
+2. Tambahkan ke `.env`: `MQTT_BROKER_URL`, `MQTT_USER`, `MQTT_PASSWORD`, `AUDIO_PUBLIC_BASE_URL` (lihat `.env.example`).
+   `AUDIO_PUBLIC_BASE_URL` harus alamat yang bisa dijangkau Pico (IP laptop), bukan `localhost`.
+3. Jalankan FastAPI dengan `--host 0.0.0.0` agar Pico bisa mengunduh `/audio/...`, dan buka port 8000 di firewall.
+4. Endpoint (semua perlu token): `GET /api/totem`, `POST /api/totem/pair` `{device_id}`, `DELETE /api/totem`,
+   `POST /api/totem/play` `{story_id, volume?}`, `POST /api/totem/command` `{action: pause|resume|stop|volume, value?}`.
+   Totem hanya bisa ditautkan bila sedang terlihat online di broker; satu akun satu totem.
+
 ## 7. Masalah yang pernah terjadi
 
 | Gejala | Penyebab | Solusi |

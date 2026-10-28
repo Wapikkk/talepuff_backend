@@ -17,6 +17,7 @@ import (
 
 	"talepuff_backend/auth"
 	"talepuff_backend/models"
+	"talepuff_backend/totem"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -45,7 +46,9 @@ type env struct {
 
 // newTestEnv memakai database tes TERPISAH (TEST_DB_URL). Menolak berjalan bila nama database
 // tidak berakhiran "_test", supaya tes yang mengosongkan tabel tidak pernah menyentuh data asli.
-func newTestEnv(t *testing.T) *env {
+func newTestEnv(t *testing.T) *env { return newTestEnvWithHub(t, nil) }
+
+func newTestEnvWithHub(t *testing.T, hub totem.Hub) *env {
 	t.Helper()
 	_ = godotenv.Load("../.env")
 	dsn := os.Getenv("TEST_DB_URL")
@@ -69,16 +72,16 @@ func newTestEnv(t *testing.T) *env {
 		t.Fatalf("menolak menjalankan tes di database %q: namanya harus berakhiran _test", name)
 	}
 
-	if err := db.AutoMigrate(&models.User{}, &models.Child{}, &models.Story{}, &models.StoryJob{}, &models.Feedback{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Child{}, &models.Story{}, &models.StoryJob{}, &models.Feedback{}, &models.Device{}); err != nil {
 		t.Fatalf("migrasi gagal: %v", err)
 	}
-	if err := db.Exec("TRUNCATE TABLE feedbacks, story_jobs, stories, children, users RESTART IDENTITY CASCADE").Error; err != nil {
+	if err := db.Exec("TRUNCATE TABLE devices, feedbacks, story_jobs, stories, children, users RESTART IDENTITY CASCADE").Error; err != nil {
 		t.Fatalf("gagal mengosongkan tabel tes: %v", err)
 	}
 
 	sqlDB, _ := db.DB()
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	return &env{h: New(db, fakeVerifier{}), db: db}
+	return &env{h: New(db, fakeVerifier{}, hub), db: db}
 }
 
 // raw mengirim permintaan sebagai pengguna [uid]; uid kosong = tanpa header Authorization.
