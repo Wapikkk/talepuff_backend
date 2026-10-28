@@ -3,12 +3,17 @@ package router
 import (
 	"talepuff_backend/auth"
 	"talepuff_backend/handlers"
+	"talepuff_backend/totem"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
-func New(db *gorm.DB, verifier auth.Verifier) *gin.Engine {
+// hub boleh nil: perintah totem lalu dijawab 503.
+func New(db *gorm.DB, verifier auth.Verifier, hub totem.Hub) *gin.Engine {
+	if hub == nil {
+		hub = totem.Disabled{}
+	}
 	r := gin.Default()
 	r.Static("/uploads", "./uploads")
 	r.GET("/api/health", handlers.Health)
@@ -29,6 +34,11 @@ func New(db *gorm.DB, verifier auth.Verifier) *gin.Engine {
 		api.DELETE("/stories/:id", handlers.DeleteStory(db))
 		api.POST("/audio/generate_audio", handlers.GeneratedAudio(db))
 		api.POST("/feedback", handlers.SubmitFeedback(db))
+		api.GET("/totem", handlers.GetTotem(db, hub))
+		api.POST("/totem/pair", handlers.PairTotem(db, hub))
+		api.DELETE("/totem", handlers.UnpairTotem(db, hub))
+		api.POST("/totem/play", handlers.PlayOnTotem(db, hub))
+		api.POST("/totem/command", handlers.CommandTotem(db, hub))
 	}
 	return r
 }

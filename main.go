@@ -8,6 +8,7 @@ import (
 	"talepuff_backend/handlers"
 	"talepuff_backend/models"
 	"talepuff_backend/router"
+	"talepuff_backend/totem"
 
 	"os"
 
@@ -36,6 +37,7 @@ func main() {
 		&models.Story{},
 		&models.StoryJob{},
 		&models.Feedback{},
+		&models.Device{},
 	); err != nil {
 		log.Fatal("Migrasi database gagal: ", err)
 	}
@@ -47,7 +49,18 @@ func main() {
 		log.Fatal("Gagal menyiapkan verifikasi token Firebase: ", err)
 	}
 
-	r := router.New(db, verifier)
+	var hub totem.Hub
+	if broker := os.Getenv("MQTT_BROKER_URL"); broker != "" {
+		hub = totem.NewMQTTHub(totem.MQTTConfig{
+			BrokerURL: broker,
+			User:      os.Getenv("MQTT_USER"),
+			Password:  os.Getenv("MQTT_PASSWORD"),
+		})
+	} else {
+		fmt.Println("MQTT_BROKER_URL kosong: fitur totem dimatikan")
+	}
+
+	r := router.New(db, verifier, hub)
 
 	fmt.Println("Server is running on port 8080...")
 	os.MkdirAll("./uploads/profiles", os.ModePerm)
