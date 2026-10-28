@@ -131,6 +131,12 @@ Backend yang mengirim perintah ke totem; aplikasi cukup memanggil API.
 3. Jalankan FastAPI dengan `--host 0.0.0.0` agar Pico bisa mengunduh `/audio/...`, dan buka port 8000 di firewall.
 4. Endpoint (semua perlu token): `GET /api/totem`, `POST /api/totem/pair` `{device_id}`, `DELETE /api/totem`,
    `POST /api/totem/play` `{story_id, volume?}`, `POST /api/totem/command` `{action: pause|resume|stop|volume, value?}`.
+   `PUT /api/totem/volume-limit` `{limit: 0-100}` (batas orang tua, bawaan 50): backend memotong semua volume yang dikirim ke totem sampai batas ini.
+   `PUT /api/totem/bedtime` `{enabled, hour, minute}`: cerita malam otomatis. Penjadwal di Gin memeriksa tiap 20 detik dan memutar cerita bersuara
+   terbaru milik akun pada jam itu (zona waktu laptop/server), sekali sehari, paling lambat 10 menit sesudah jam jadwal; dilewati bila totem mati
+   sepanjang jendela itu atau sedang memutar sesuatu.
+   `GET /api/stats/weekly?child_id=`: tujuh hari terakhir (hari ini terakhir, zona waktu server) berisi cerita dibuat, berapa kali diputar di totem, dan
+   detik yang terdengar. Lama dengar dicatat dari posisi yang dilaporkan totem (tabel `story_plays`); cerita yang diputar sebelum fitur ini tidak tercatat.
    Totem hanya bisa ditautkan bila sedang terlihat online di broker; satu akun satu totem.
 
 ## 7. Masalah yang pernah terjadi

@@ -22,6 +22,8 @@ type MQTTHub struct {
 
 	mu     sync.RWMutex
 	states map[string]*Status
+
+	observer func(deviceID string, status Status)
 }
 
 // NewMQTTHub tidak menunggu broker: bila broker belum hidup, sambungan dicoba ulang di latar belakang.
@@ -91,7 +93,18 @@ func (h *MQTTHub) onMessage(_ mqtt.Client, msg mqtt.Message) {
 		state.Online = true
 		state.State, state.Reason, state.StoryID = report.State, report.Reason, report.StoryID
 		state.Position, state.Duration, state.Volume = report.Position, report.Duration, report.Volume
+		if h.observer != nil {
+			snapshot := *state
+			go h.observer(id, snapshot)
+		}
 	}
+}
+
+// OnStatus mendaftarkan fungsi yang dipanggil setiap kali totem melaporkan status. Panggil sebelum dipakai.
+func (h *MQTTHub) OnStatus(fn func(deviceID string, status Status)) {
+	h.mu.Lock()
+	h.observer = fn
+	h.mu.Unlock()
 }
 
 func (h *MQTTHub) Send(deviceID string, cmd Command) error {

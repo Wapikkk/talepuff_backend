@@ -291,3 +291,104 @@ func TestTotem_Command(t *testing.T) {
 	hub.statuses["totem-001"] = totem.Status{Online: false}
 	mustEqual(t, "totem mati", send(map[string]any{"action": "pause"}), http.StatusConflict)
 }
+
+func TestTotem_VolumeLimit(t *testing.T) {
+	t.Setenv("AUDIO_PUBLIC_BASE_URL", "http://172.20.10.8:8000")
+	hub := newFakeHub()
+	e := newTestEnvWithHub(t, hub)
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	story := e.seedStory(t, child.ID, "Moon", time.Hour, func(s *models.Story) {
+		s.AudioURL = "http://localhost:8000/audio/story_1792526749_Brave.wav"
+	})
+	hub.online("totem-001")
+	e.pair(t, "uid-1", "totem-001")
+
+	limit := func(uid string, body map[string]any) *httptest.ResponseRecorder {
+		return e.call(t, uid, http.MethodPut, "/api/totem/volume-limit", body)
+	}
+	lastVolume := func() int {
+		cmds := hub.commands()
+		cmd := cmds[len(cmds)-1].Command
+		if cmd.Volume != nil {
+			return *cmd.Volume
+		}
+		return *cmd.Value
+	}
+	play := func(body map[string]any) {
+		body["story_id"] = story.ID
+		mustEqual(t, "play", e.call(t, "uid-1", http.MethodPost, "/api/totem/play", body).Code, http.StatusOK)
+	}
+
+	t.Run("batas bawaan dibaca bersama totem", func(t *testing.T) {
+		rec := e.call(t, "uid-1", http.MethodGet, "/api/totem", nil)
+		var body struct {
+			VolumeLimit int `json:"volume_limit"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		mustEqual(t, "batas bawaan", body.VolumeLimit, 50)
+	})
+
+	t.Run("nilai di luar 0-100 atau tanpa nilai ditolak", func(t *testing.T) {
+		mustEqual(t, "negatif", limit("uid-1", map[string]any{"limit": -1}).Code, http.StatusBadRequest)
+		mustEqual(t, "101", limit("uid-1", map[string]any{"limit": 101}).Code, http.StatusBadRequest)
+		mustEqual(t, "kosong", limit("uid-1", map[string]any{}).Code, http.StatusBadRequest)
+	})
+
+	t.Run("tanpa totem tertaut", func(t *testing.T) {
+		rec := limit("uid-2", map[string]any{"limit": 30})
+		mustEqual(t, "status", rec.Code, http.StatusNotFound)
+		mustEqual(t, "kode", errorCode(rec), "totem_not_paired")
+	})
+
+	t.Run("play dipotong ke batas, apa pun yang diminta", func(t *testing.T) {
+		play(map[string]any{"volume": 90})
+		mustEqual(t, "diminta 90", lastVolume(), 50)
+		play(map[string]any{"volume": 20})
+		mustEqual(t, "diminta 20", lastVolume(), 20)
+	})
+
+	t.Run("tanpa permintaan memakai volume totem saat ini, tetap dipotong", func(t *testing.T) {
+		hub.statuses["totem-001"] = totem.Status{Online: true, State: "idle", Volume: 80}
+		play(map[string]any{})
+		mustEqual(t, "totem sedang 80", lastVolume(), 50)
+		hub.statuses["totem-001"] = totem.Status{Online: true, State: "idle", Volume: 30}
+		play(map[string]any{})
+		mustEqual(t, "totem sedang 30", lastVolume(), 30)
+		hub.online("totem-001")
+		play(map[string]any{})
+		mustEqual(t, "volume totem belum diketahui", lastVolume(), 50)
+	})
+
+	t.Run("perintah volume dari remote dipotong", func(t *testing.T) {
+		mustEqual(t, "status", e.call(t, "uid-1", http.MethodPost, "/api/totem/command", map[string]any{"action": "volume", "value": 100}).Code, http.StatusOK)
+		mustEqual(t, "dipotong", lastVolume(), 50)
+	})
+
+	t.Run("menurunkan batas menurunkan totem yang sedang keras", func(t *testing.T) {
+		hub.statuses["totem-001"] = totem.Status{Online: true, State: "playing", Volume: 50}
+		before := len(hub.commands())
+		rec := limit("uid-1", map[string]any{"limit": 30})
+		mustEqual(t, "status", rec.Code, http.StatusOK)
+		mustEqual(t, "perintah turun terkirim", len(hub.commands()), before+1)
+		mustEqual(t, "ke batas baru", lastVolume(), 30)
+
+		var saved models.Device
+		e.db.Where("device_id = ?", "totem-001").First(&saved)
+		mustEqual(t, "tersimpan", saved.VolumeLimit, 30)
+	})
+
+	t.Run("menaikkan batas tidak mengubah volume totem", func(t *testing.T) {
+		hub.statuses["totem-001"] = totem.Status{Online: true, State: "playing", Volume: 30}
+		before := len(hub.commands())
+		mustEqual(t, "status", limit("uid-1", map[string]any{"limit": 80}).Code, http.StatusOK)
+		mustEqual(t, "tanpa perintah", len(hub.commands()), before)
+	})
+
+	t.Run("batas 0 membisukan", func(t *testing.T) {
+		mustEqual(t, "status", limit("uid-1", map[string]any{"limit": 0}).Code, http.StatusOK)
+		play(map[string]any{"volume": 70})
+		mustEqual(t, "dibisukan", lastVolume(), 0)
+	})
+}

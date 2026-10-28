@@ -87,6 +87,7 @@ func storyDTO(story models.Story, full bool) dto.StoryDTO {
 	if full {
 		result.Content = story.Content
 		result.Description = story.Description
+		result.Sentences = decodeSentences(story.Sentences)
 	}
 	return result
 }
@@ -122,7 +123,7 @@ func GeneratedAudio(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		if err := db.Model(&models.Story{}).Where("id = ?", story.ID).
-			Updates(map[string]any{"audio_url": aiResult.AudioURL, "voice_tone": voiceTone}).Error; err != nil {
+			Updates(map[string]any{"audio_url": aiResult.AudioURL, "sentences": encodeSentences(aiResult.Sentences), "voice_tone": voiceTone}).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save audio"})
 			return
 		}

@@ -38,6 +38,7 @@ func main() {
 		&models.StoryJob{},
 		&models.Feedback{},
 		&models.Device{},
+		&models.StoryPlay{},
 	); err != nil {
 		log.Fatal("Migrasi database gagal: ", err)
 	}
@@ -56,6 +57,12 @@ func main() {
 			User:      os.Getenv("MQTT_USER"),
 			Password:  os.Getenv("MQTT_PASSWORD"),
 		})
+		if source, ok := hub.(interface {
+			OnStatus(func(string, totem.Status))
+		}); ok {
+			source.OnStatus(handlers.RecordListening(db))
+		}
+		go handlers.RunBedtimeScheduler(context.Background(), db, hub)
 	} else {
 		fmt.Println("MQTT_BROKER_URL kosong: fitur totem dimatikan")
 	}
