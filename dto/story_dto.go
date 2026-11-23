@@ -52,10 +52,12 @@ type StoryDTO struct {
 	Description   string     `json:"description,omitempty"`
 	AudioURL      string     `json:"audio_url"`
 	Sentences     []Sentence `json:"sentences,omitempty"`
-	VoiceTone     string     `json:"voice_tone"`
-	IsFavorite    bool       `json:"is_favorite"`
-	PlayCount     int        `json:"play_count"`
-	CreatedAt     time.Time  `json:"created_at"`
+	// PlaybackURL: alamat audio yang bisa dijangkau HP di jaringan yang sama (AUDIO_PUBLIC_BASE_URL). Hanya di detail.
+	PlaybackURL string    `json:"playback_url,omitempty"`
+	VoiceTone   string    `json:"voice_tone"`
+	IsFavorite  bool      `json:"is_favorite"`
+	PlayCount   int       `json:"play_count"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type StoryListResponse struct {
