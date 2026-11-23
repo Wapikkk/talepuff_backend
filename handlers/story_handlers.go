@@ -88,6 +88,9 @@ func storyDTO(story models.Story, full bool) dto.StoryDTO {
 		result.Content = story.Content
 		result.Description = story.Description
 		result.Sentences = decodeSentences(story.Sentences)
+		if url, ok := totemAudioURL(story.AudioURL); ok {
+			result.PlaybackURL = url
+		}
 	}
 	return result
 }

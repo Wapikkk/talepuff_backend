@@ -857,3 +857,38 @@ func TestStoryJob_AStoryWithoutTimingsStillWorks(t *testing.T) {
 	mustEqual(t, "selesai", job.Status, "done")
 	mustEqual(t, "tanpa kalimat", len(job.Story.Sentences), 0)
 }
+
+func TestGetStory_PlaybackURLForThePhone(t *testing.T) {
+	e := newTestEnv(t)
+	e.register(t, "uid-1", "Aira")
+	child, _ := e.child(t, "uid-1", "uid-1")
+	voiced := e.seedStory(t, child.ID, "Voiced", time.Hour, func(s *models.Story) { s.AudioURL = "http://localhost:8000/audio/story_1792526749_Brave.wav" })
+	silent := e.seedStory(t, child.ID, "Silent", time.Hour, nil)
+	unsafe := e.seedStory(t, child.ID, "Unsafe", time.Hour, func(s *models.Story) { s.AudioURL = "http://localhost:8000/audio/..%2Fsecret.wav" })
+	playback := func(id uint) string {
+		rec := e.call(t, "uid-1", http.MethodGet, "/api/stories/"+itoa(id), nil)
+		var body struct {
+			Data struct {
+				PlaybackURL string `json:"playback_url"`
+			} `json:"data"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return body.Data.PlaybackURL
+	}
+
+	t.Setenv("AUDIO_PUBLIC_BASE_URL", "http://172.20.10.14:8000/")
+	mustEqual(t, "alamat untuk HP", playback(voiced.ID), "http://172.20.10.14:8000/audio/story_1792526749_Brave.wav")
+	mustEqual(t, "cerita tanpa suara", playback(silent.ID), "")
+	mustEqual(t, "nama berkas tidak aman", playback(unsafe.ID), "")
+
+	t.Setenv("AUDIO_PUBLIC_BASE_URL", "")
+	mustEqual(t, "alamat publik belum diatur", playback(voiced.ID), "")
+
+	t.Run("daftar cerita tidak membawanya", func(t *testing.T) {
+		t.Setenv("AUDIO_PUBLIC_BASE_URL", "http://172.20.10.14:8000")
+		raw := e.listStories(t, "uid-1", childQuery(child, "")).Body.String()
+		if strings.Contains(raw, "playback_url") {
+			t.Fatalf("daftar tidak boleh memuat playback_url: %s", raw)
+		}
+	})
+}
