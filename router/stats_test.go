@@ -55,7 +55,8 @@ func TestWeeklyStats(t *testing.T) {
 	child, _ := e.child(t, "uid-1", "uid-1")
 	other, _ := e.child(t, "uid-2", "uid-2")
 
-	ago := func(days int, hour int) time.Duration { return at(28, 15, 0, 0).Sub(at(28-days, hour, 0, 0)) }
+	// seedStory menghitung umur dari jam asli, jadi umur dihitung dari jam asli ke waktu yang diinginkan.
+	ago := func(days int, hour int) time.Duration { return time.Since(at(28-days, hour, 0, 0)) }
 	s1 := e.seedStory(t, child.ID, "Today", ago(0, 9), nil)
 	s2 := e.seedStory(t, child.ID, "Three days ago", ago(3, 20), nil)
 	e.seedStory(t, child.ID, "Too old", ago(8, 12), nil)
