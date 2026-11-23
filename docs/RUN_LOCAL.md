@@ -138,6 +138,10 @@ Backend yang mengirim perintah ke totem; aplikasi cukup memanggil API.
    `GET /api/stats/weekly?child_id=`: tujuh hari terakhir (hari ini terakhir, zona waktu server) berisi cerita dibuat, berapa kali diputar di totem, dan
    detik yang terdengar. Lama dengar dicatat dari posisi yang dilaporkan totem (tabel `story_plays`); cerita yang diputar sebelum fitur ini tidak tercatat.
    Totem hanya bisa ditautkan bila sedang terlihat online di broker; satu akun satu totem.
+   **Satu totem hanya dikendalikan satu akun pada satu waktu (lease 2 menit).** Setiap permintaan pemilik memperpanjang lease, dan aplikasi yang
+   aktif mengirim detak tiap 45 detik. Akun lain yang mencoba menautkan saat lease masih hidup mendapat `totem_busy` (409). Setelah 2 menit
+   tanpa aktivitas, atau seketika setelah pemilik menekan Putuskan, totem bisa diambil alih: totem dihentikan, jadwal tidur dimatikan, dan batas
+   volume kembali ke 50. Berlaku per akun, bukan per HP.
 
 ## 7. Masalah yang pernah terjadi
 

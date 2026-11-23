@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"talepuff_backend/handlers"
 	"talepuff_backend/models"
 	"talepuff_backend/totem"
 )
@@ -87,7 +88,7 @@ func TestTotem_ErrorsCarryAStableCode(t *testing.T) {
 
 	hub.online("totem-001")
 	pair("uid-1", "totem-001")
-	mustEqual(t, "milik akun lain", errorCode(pair("uid-2", "totem-001")), "totem_taken")
+	mustEqual(t, "milik akun lain", errorCode(pair("uid-2", "totem-001")), "totem_busy")
 
 	hub.statuses["totem-001"] = totem.Status{Online: false}
 	mustEqual(t, "mati", errorCode(e.call(t, "uid-1", http.MethodPost, "/api/totem/command", command)), "totem_offline")
@@ -390,5 +391,132 @@ func TestTotem_VolumeLimit(t *testing.T) {
 		mustEqual(t, "status", limit("uid-1", map[string]any{"limit": 0}).Code, http.StatusOK)
 		play(map[string]any{"volume": 70})
 		mustEqual(t, "dibisukan", lastVolume(), 0)
+	})
+}
+
+func TestTotem_OneControllerAtATimeWithALease(t *testing.T) {
+	hub := newFakeHub()
+	e := newTestEnvWithHub(t, hub)
+	clock := at(28, 10, 0, 0)
+	handlers.Now = func() time.Time { return clock }
+	t.Cleanup(func() { handlers.Now = time.Now })
+	advance := func(d time.Duration) { clock = clock.Add(d) }
+
+	e.register(t, "uid-1", "Aira")
+	e.register(t, "uid-2", "Bimo")
+	e.register(t, "uid-3", "Cici")
+	hub.online("totem-001")
+	hub.online("totem-002")
+	pair := func(uid, id string) *httptest.ResponseRecorder {
+		return e.call(t, uid, http.MethodPost, "/api/totem/pair", map[string]any{"device_id": id})
+	}
+	owner := func(id string) uint {
+		var device models.Device
+		if err := e.db.Where("device_id = ?", id).First(&device).Error; err != nil {
+			return 0
+		}
+		return device.UserID
+	}
+	userID := func(uid string) uint {
+		var user models.User
+		e.db.Where("firebase_uid = ?", uid).First(&user)
+		return user.ID
+	}
+	stops := func() int {
+		n := 0
+		for _, c := range hub.commands() {
+			if c.Command.Action == "stop" {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("yang pertama menyambung mendapat totem", func(t *testing.T) {
+		mustEqual(t, "status", pair("uid-1", "totem-001").Code, http.StatusOK)
+		mustEqual(t, "pemilik", owner("totem-001"), userID("uid-1"))
+	})
+
+	t.Run("selama dipakai, akun lain ditolak dan tidak ada yang berubah", func(t *testing.T) {
+		rec := pair("uid-2", "totem-001")
+		mustEqual(t, "status", rec.Code, http.StatusConflict)
+		mustEqual(t, "kode", errorCode(rec), "totem_busy")
+		mustEqual(t, "pemilik tetap", owner("totem-001"), userID("uid-1"))
+		mustEqual(t, "totem tidak dihentikan", stops(), 0)
+	})
+
+	t.Run("aktivitas pemilik memperpanjang lease", func(t *testing.T) {
+		e.call(t, "uid-1", http.MethodPut, "/api/totem/volume-limit", map[string]any{"limit": 20})
+		e.setBedtime(t, "uid-1", true, 21, 30)
+
+		advance(90 * time.Second)
+		mustEqual(t, "pemilik membaca status", e.call(t, "uid-1", http.MethodGet, "/api/totem", nil).Code, http.StatusOK)
+		advance(90 * time.Second) // 3 menit sejak menyambung, tetapi hanya 90 detik sejak aktivitas terakhir
+		mustEqual(t, "masih dipakai", pair("uid-2", "totem-001").Code, http.StatusConflict)
+	})
+
+	t.Run("pemilik berhenti aktif melewati lease: totem bisa diambil alih", func(t *testing.T) {
+		advance(2*time.Minute + time.Second)
+		rec := pair("uid-2", "totem-001")
+		mustEqual(t, "status", rec.Code, http.StatusOK)
+		mustEqual(t, "pemilik baru", owner("totem-001"), userID("uid-2"))
+		mustEqual(t, "yang masih diputar dihentikan", stops(), 1)
+	})
+
+	t.Run("pemilik lama tidak lagi melihat atau mengendalikan totem itu", func(t *testing.T) {
+		rec := e.call(t, "uid-1", http.MethodGet, "/api/totem", nil)
+		mustEqual(t, "tidak tertaut", rec.Body.String(), `{"paired":false}`)
+		rec = e.call(t, "uid-1", http.MethodPost, "/api/totem/command", map[string]any{"action": "pause"})
+		mustEqual(t, "status", rec.Code, http.StatusNotFound)
+		mustEqual(t, "kode", errorCode(rec), "totem_not_paired")
+	})
+
+	t.Run("pengaturan pemilik lama tidak terbawa", func(t *testing.T) {
+		rec := e.call(t, "uid-2", http.MethodGet, "/api/totem", nil)
+		var body struct {
+			VolumeLimit int `json:"volume_limit"`
+			Bedtime     struct {
+				Enabled bool `json:"enabled"`
+				Hour    int  `json:"hour"`
+			} `json:"bedtime"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		mustEqual(t, "batas volume kembali bawaan", body.VolumeLimit, 50)
+		mustEqual(t, "jadwal tidur mati", body.Bedtime.Enabled, false)
+		mustEqual(t, "jam bawaan", body.Bedtime.Hour, 20)
+	})
+
+	t.Run("pemilik yang menyambung ulang memperpanjang tanpa mengganggu", func(t *testing.T) {
+		before := stops()
+		advance(100 * time.Second)
+		mustEqual(t, "status", pair("uid-2", "totem-001").Code, http.StatusOK)
+		advance(100 * time.Second)
+		mustEqual(t, "masih milik uid-2", pair("uid-3", "totem-001").Code, http.StatusConflict)
+		mustEqual(t, "tidak ada stop tambahan", stops(), before)
+	})
+
+	t.Run("memutuskan membebaskan totem seketika", func(t *testing.T) {
+		mustEqual(t, "putuskan", e.call(t, "uid-2", http.MethodDelete, "/api/totem", nil).Code, http.StatusOK)
+		mustEqual(t, "langsung bisa dipakai akun lain", pair("uid-3", "totem-001").Code, http.StatusOK)
+		mustEqual(t, "pemilik", owner("totem-001"), userID("uid-3"))
+	})
+
+	t.Run("akun yang berpindah ke totem lain melepas totem lamanya", func(t *testing.T) {
+		mustEqual(t, "uid-1 menyambung totem-002", pair("uid-1", "totem-002").Code, http.StatusOK)
+		advance(3 * time.Minute)
+
+		mustEqual(t, "uid-1 mengambil alih totem-001", pair("uid-1", "totem-001").Code, http.StatusOK)
+
+		mustEqual(t, "totem-001 milik uid-1", owner("totem-001"), userID("uid-1"))
+		mustEqual(t, "totem-002 dilepas", owner("totem-002"), uint(0))
+		var count int64
+		e.db.Model(&models.Device{}).Where("user_id = ?", userID("uid-1")).Count(&count)
+		mustEqual(t, "satu akun satu totem", count, int64(1))
+	})
+
+	t.Run("totem yang tidak dipakai siapa pun tidak punya pemilik aktif yang menghalangi", func(t *testing.T) {
+		advance(5 * time.Minute)
+		e.db.Model(&models.Device{}).Where("device_id = ?", "totem-001").Update("lease_until", nil)
+		mustEqual(t, "lease kosong dianggap bebas", pair("uid-2", "totem-001").Code, http.StatusOK)
 	})
 }

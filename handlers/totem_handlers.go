@@ -9,6 +9,7 @@ import (
 	"talepuff_backend/auth"
 	"talepuff_backend/models"
 	"talepuff_backend/totem"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -50,13 +51,61 @@ func totemNotPaired(c *gin.Context, err error) {
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 }
 
+const (
+	// Sesudah selama ini tanpa aktivitas dari pemiliknya, totem boleh diambil alih akun lain.
+	totemLease         = 2 * time.Minute
+	defaultVolumeLimit = 50
+)
+
+var errTotemBusy = errors.New("totem is in use")
+
+// ownedDevice mencari totem milik pengguna dan, karena pemiliknya sedang aktif, memperpanjang lease-nya.
 func ownedDevice(db *gorm.DB, uid string) (models.Device, error) {
 	var device models.Device
 	err := db.Select("devices.*").
 		Joins("JOIN users ON users.id = devices.user_id").
 		Where("users.firebase_uid = ?", uid).
 		First(&device).Error
+	if err == nil {
+		until := Now().Add(totemLease)
+		db.Model(&models.Device{}).Where("id = ?", device.ID).Update("lease_until", until)
+		device.LeaseUntil = &until
+	}
 	return device, err
+}
+
+// takeOverTotem memindahkan totem yang lease-nya sudah lewat ke akun baru, dengan pengaturan yang dikembalikan
+// ke bawaan agar tidak terbawa dari pengguna sebelumnya. Pengecekan lease dan perpindahan terjadi dalam satu
+// pernyataan, jadi dua akun yang mencoba bersamaan tidak bisa sama-sama berhasil.
+func takeOverTotem(db *gorm.DB, device models.Device, userID uint, now, until time.Time) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		// Satu akun, satu totem: akun yang berpindah ke totem ini melepas totem lamanya.
+		if err := tx.Where("user_id = ? AND id <> ?", userID, device.ID).Delete(&models.Device{}).Error; err != nil {
+			return err
+		}
+		res := tx.Model(&models.Device{}).
+			Where("id = ? AND (lease_until IS NULL OR lease_until <= ?)", device.ID, now).
+			Updates(map[string]any{
+				"user_id":          userID,
+				"lease_until":      until,
+				"volume_limit":     defaultVolumeLimit,
+				"bedtime_enabled":  false,
+				"bedtime_hour":     20,
+				"bedtime_minute":   0,
+				"bedtime_last_run": "",
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errTotemBusy
+		}
+		return nil
+	})
+}
+
+func totemBusy(c *gin.Context) {
+	totemFail(c, http.StatusConflict, "totem_busy", "This totem is being used by another device")
 }
 
 func GetTotem(db *gorm.DB, hub totem.Hub) gin.HandlerFunc {
@@ -110,13 +159,27 @@ func PairTotem(db *gorm.DB, hub totem.Hub) gin.HandlerFunc {
 			return
 		}
 
+		now := Now()
+		until := now.Add(totemLease)
+
 		var existing models.Device
 		err := db.Where("device_id = ?", id).First(&existing).Error
 		switch {
-		case err == nil && existing.UserID != user.ID:
-			totemFail(c, http.StatusConflict, "totem_taken", "This totem is already linked to another account")
+		case err == nil && existing.UserID == user.ID:
+			db.Model(&existing).Update("lease_until", until)
+			c.JSON(http.StatusOK, gin.H{"device_id": id})
 			return
 		case err == nil:
+			if err := takeOverTotem(db, existing, user.ID, now, until); err != nil {
+				if errors.Is(err, errTotemBusy) {
+					totemBusy(c)
+				} else {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to link the totem"})
+				}
+				return
+			}
+			// Pengendali sebelumnya sudah lewat batas waktunya; hentikan apa pun yang masih diputar untuknya.
+			_ = hub.Send(id, totem.Command{Action: "stop"})
 			c.JSON(http.StatusOK, gin.H{"device_id": id})
 			return
 		case !errors.Is(err, gorm.ErrRecordNotFound):
@@ -124,13 +187,13 @@ func PairTotem(db *gorm.DB, hub totem.Hub) gin.HandlerFunc {
 			return
 		}
 
-		// Satu akun, satu totem: menautkan totem baru menggantikan yang lama.
-		res := db.Model(&models.Device{}).Where("user_id = ?", user.ID).Update("device_id", id)
+		// Totem belum pernah ditautkan. Satu akun, satu totem: menautkan totem baru menggantikan yang lama.
+		res := db.Model(&models.Device{}).Where("user_id = ?", user.ID).Updates(map[string]any{"device_id": id, "lease_until": until})
 		if res.Error == nil && res.RowsAffected == 0 {
-			res.Error = db.Create(&models.Device{DeviceID: id, UserID: user.ID}).Error
+			res.Error = db.Create(&models.Device{DeviceID: id, UserID: user.ID, LeaseUntil: &until}).Error
 		}
 		if errors.Is(res.Error, gorm.ErrDuplicatedKey) {
-			totemFail(c, http.StatusConflict, "totem_taken", "This totem is already linked to another account")
+			totemBusy(c)
 			return
 		}
 		if res.Error != nil {
